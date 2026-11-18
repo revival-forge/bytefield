@@ -1,0 +1,73 @@
+# The CI. It needs no game data: the tests
+# that need it are skipped (scripts/tests ci). The Windows and Linux packages are artifacts of every push, to try on another machine.
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - run: cargo test --release --workspace --exclude bytefield-client
+      - run: cargo build --release -p bytefield-client
+      - if: runner.os == 'Linux'
+        run: cargo install cargo-deny --locked && cargo deny check licenses
+  # the packages, made by the same scripts as by hand (docs/user/building.md, "Packages")
+  package-windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - shell: bash
+        run: scripts/package-windows dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bytefield-windows
+          path: dist/*.zip
+          retention-days: 14
+  package-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      # linked against glibc 2.31 with zig, so that it runs on older distributions than the runner's
+      - run: |
+          curl -sSfL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz | tar -xJ -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.15.2" >> "$GITHUB_PATH"
+          cargo install cargo-zigbuild --locked
+      - run: GLIBC=2.31 scripts/package-linux dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bytefield-linux
+          path: dist/*.tar.gz
+          retention-days: 14
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.3
+      - run: cd python && uv run pytest
+  # every commit of a pull request signed off (CONTRIBUTING.md, "Sign your commits (DCO)")
+  dco:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - run: |
+          bad=0
+          for c in $(git rev-list ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}); do
+            git show -s --format=%B "$c" | grep -q '^Signed-off-by: ' || { echo "commit $c is not signed off"; bad=1; }
+          done
+          exit $bad

@@ -1,0 +1,4 @@
+#!/bin/bash
+# What the player has and turns on: the install, the mods, the graphics packs, the profile.
+here=$(cd "$(dirname "$0")/.." && pwd)
+exec "$here/target/release/bytefield-content" "$@"

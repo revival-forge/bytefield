@@ -1,0 +1,40 @@
+#!/bin/bash
+# The zip for Windows (x86-64), from the public tree only: the client, the server, the content tool and the texts. No game data.
+#   scripts/package-windows [out_dir]      builds (`dist` profile, its own target dir) and leaves bytefield-<version>-windows-x86_64.zip
+# On Linux it cross-builds with zig and cargo-zigbuild (both without root: zig unpacked anywhere on the PATH,
+# `cargo install cargo-zigbuild`, `rustup target add x86_64-pc-windows-gnu`); on Windows (Git Bash, as in the CI) it
+# builds with cargo as it is. Either way the same files go in: the twin of scripts/package-linux.
+set -u
+here=$(cd "$(dirname "$0")/.." && pwd)
+
+out=${1:-$here}; mkdir -p "$out"; out=$(cd "$out" && pwd)
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
+target=${CARGO_TARGET_DIR:-$here/target/package}
+cd "$here" || exit 1
+# (where it was built stays out of the binaries; no symbols, as the Linux one is stripped)
+flags="--remap-path-prefix=$HOME=/build --remap-path-prefix=$here=/src -C strip=symbols"
+if [ "${OS:-}" = Windows_NT ]; then
+    RUSTFLAGS="$flags" CARGO_TARGET_DIR=$target cargo build --profile dist -p bytefield-client -p bytefield-server -p bytefield-content || exit 1
+    bin=$target/dist
+else
+    # (zig's clang refuses __DATE__ in a C dependency unless told it is no error)
+    RUSTFLAGS="$flags" CFLAGS_x86_64_pc_windows_gnu="-Wno-error=date-time" CARGO_TARGET_DIR=$target \
+        cargo zigbuild --profile dist --target x86_64-pc-windows-gnu -p bytefield-client -p bytefield-server -p bytefield-content || exit 1
+    bin=$target/x86_64-pc-windows-gnu/dist
+fi
+name=bytefield-$version-windows-x86_64
+t=$(mktemp -d "$out/package.XXXXXX"); trap 'rm -rf "$t"' EXIT
+mkdir "$t/$name"
+for b in bytefield bytefield-server bytefield-content; do cp "$bin/$b.exe" "$t/$name/" || exit 1; done
+cp README.md README.es.md LICENSE CREDITS.md NOTICE AUTHORS CONTRIBUTING.md docs/commands.md docs/user/windows.md docs/user/windows.es.md "$t/$name/" || exit 1
+[ -e THIRD_PARTY.md ] && cp THIRD_PARTY.md "$t/$name/"
+rm -f "$out/$name.zip"
+# (the zip named from inside the temporary folder, which is in out_dir: no path for Git Bash to translate for 7z)
+if command -v zip > /dev/null; then
+    (cd "$t" && zip -qrX "../$name.zip" "$name") || exit 1
+elif command -v 7z > /dev/null; then
+    (cd "$t" && 7z a -tzip -bd -bso0 "../$name.zip" "$name") || exit 1
+else
+    echo "no zip or 7z on the PATH"; exit 1
+fi
+echo "$out/$name.zip"

@@ -1,0 +1,24 @@
+[package]
+name = "bytefield-sim"
+description = "The simulation core: vehicle models from templates, deterministic fixed-step world"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+pprof = { version = "0.15", optional = true, default-features = false }
+bytefield-vfs = { path = "../vfs" }
+bytefield-con = { path = "../con-lang" }
+bytefield-formats = { path = "../formats" }
+bytefield-world = { path = "../world" }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+bincode = "1.3.3"
+
+[features]
+default = []
+# a sampling profiler for examples/bots (`BOTS_PROF=<out.txt>`), without perf and without root
+prof = ["dep:pprof"]
+
+[dev-dependencies]
+bytefield-testdata = { path = "../testdata" }

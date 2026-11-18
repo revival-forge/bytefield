@@ -1,0 +1,12 @@
+[package]
+name = "bytefield-formats"
+description = "Refractor 1 data formats: DDS textures, terrain heightmaps, (later) .sm/.tm meshes"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+png = "0.18"
+
+[dev-dependencies]
+bytefield-testdata = { path = "../testdata" }

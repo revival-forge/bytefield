@@ -1,0 +1,9 @@
+[package]
+name = "bytefield-testdata"
+description = "Test support: the content layers (base game, expansions, mods, packs) a test needs, and skipping it when they are missing"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[dependencies]

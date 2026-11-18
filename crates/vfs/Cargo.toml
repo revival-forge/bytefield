@@ -1,0 +1,12 @@
+[package]
+name = "bytefield-vfs"
+description = "Refractor 1 file system: .rfa archives (LZO1X), mod paths, case-insensitive lookup"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+# only to produce compressed test data; decompression is ours (src/lzo.rs)
+lzokay-native = "0.1"

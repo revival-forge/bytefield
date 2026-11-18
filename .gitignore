@@ -1,0 +1,11 @@
+/target/
+/data/
+/reference/
+__pycache__/
+.venv/
+.pytest_cache/
+# re/ is a separate, local-only repository
+/re/
+
+# also the worktrees' data link (committing it once wiped data/)
+data

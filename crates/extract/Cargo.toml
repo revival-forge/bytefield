@@ -1,0 +1,8 @@
+[package]
+name = "bytefield-extract"
+description = "Unpack the installers the game and its mods shipped in (PKWARE DCL, Setup Factory 6)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]

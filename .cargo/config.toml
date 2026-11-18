@@ -1,0 +1,5 @@
+# The ALSA headers for the client's sound, unpacked without installing under
+# data/runtime-libs (as libxkbcommon-x11). Where libasound2-dev is installed the system
+# one is found as well.
+[env]
+PKG_CONFIG_PATH = { value = "data/runtime-libs/root/usr/lib/x86_64-linux-gnu/pkgconfig", relative = true }

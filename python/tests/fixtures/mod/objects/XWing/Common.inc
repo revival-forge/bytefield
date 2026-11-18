@@ -1,0 +1,3 @@
+ObjectTemplate.mass 10
+GeometryTemplate.setActive xwing_m1
+GeometryTemplate.shadowPrecision 2

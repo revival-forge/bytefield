@@ -1,0 +1,7 @@
+Var v_mode
+game.getGamePlayMode -> v_mode
+if v_mode == GPM_CQ
+	run GameTypes/Conquest host
+endif
+rem
+run Missing

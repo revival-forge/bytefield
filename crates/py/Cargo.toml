@@ -1,0 +1,20 @@
+[package]
+name = "bytefield-py"
+description = "Python bindings: the headless test bench (`import bytefield`)"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+name = "bytefield"
+crate-type = ["cdylib"]
+
+[dependencies]
+bytefield-sim = { path = "../sim", default-features = false }
+bytefield-world = { path = "../world" }
+pyo3 = { version = "0.30", features = ["extension-module", "abi3-py312"] }
+serde = "1"
+serde_json = "1"
+
+[features]
+default = []

@@ -1,0 +1,36 @@
+#!/bin/bash
+# The tarball for Linux (x86-64), from the public tree only: the client, the server, the content tool and the texts. No game data.
+#   scripts/package-linux [out_dir]        builds (`dist` profile, its own target dir) and leaves bytefield-<version>-linux-x86_64.tar.gz
+# GLIBC=2.31: linked against that glibc with zig and cargo-zigbuild (both without root: zig unpacked anywhere on the PATH,
+# `cargo install cargo-zigbuild`), so that it runs on older distributions than the one it is built on; it checks the
+# highest glibc version the binaries ask for.
+set -u
+here=$(cd "$(dirname "$0")/.." && pwd)
+
+out=${1:-$here}; mkdir -p "$out"; out=$(realpath "$out")
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$here/Cargo.toml" | head -1)
+target=${CARGO_TARGET_DIR:-$here/target/package}
+cd "$here" || exit 1
+# (where it was built stays out of the binaries)
+flags="--remap-path-prefix=$HOME=/build --remap-path-prefix=$here=/src"
+if [ -n "${GLIBC:-}" ]; then
+    # (libasound is the user's, built against their glibc: what it needs is not ours to resolve at link time)
+    RUSTFLAGS="$flags -C link-arg=-Wl,--allow-shlib-undefined" PKG_CONFIG_ALLOW_CROSS=1 CARGO_TARGET_DIR=$target \
+        cargo zigbuild --profile dist --target "x86_64-unknown-linux-gnu.$GLIBC" -p bytefield-client -p bytefield-server -p bytefield-content || exit 1
+    bin=$target/x86_64-unknown-linux-gnu/dist
+    for b in bytefield bytefield-server bytefield-content; do
+        top=$(objdump -T "$bin/$b" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+        [ "$(printf '%s\n%s\n' "$top" "$GLIBC" | sort -V | tail -1)" = "$GLIBC" ] || { echo "$b asks for glibc $top, more than $GLIBC"; exit 1; }
+    done
+else
+    RUSTFLAGS="$flags" CARGO_TARGET_DIR=$target cargo build --profile dist -p bytefield-client -p bytefield-server -p bytefield-content || exit 1
+    bin=$target/dist
+fi
+name=bytefield-$version-linux-x86_64
+t=$(mktemp -d "$out/package.XXXXXX"); trap 'rm -rf "$t"' EXIT
+mkdir "$t/$name"
+for b in bytefield bytefield-server bytefield-content; do cp "$bin/$b" "$t/$name/" && strip "$t/$name/$b" || exit 1; done
+cp README.md README.es.md LICENSE CREDITS.md NOTICE AUTHORS CONTRIBUTING.md docs/commands.md "$t/$name/" || exit 1
+[ -e THIRD_PARTY.md ] && cp THIRD_PARTY.md "$t/$name/"
+tar --sort=name --owner=0 --group=0 --numeric-owner -czf "$out/$name.tar.gz" -C "$t" "$name" || exit 1
+echo "$out/$name.tar.gz"

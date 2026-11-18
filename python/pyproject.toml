@@ -1,0 +1,23 @@
+[project]
+name = "bytefield-tools"
+version = "0.1.0"
+description = "bytefield: tools, data inventory and reference tests around the Rust core"
+requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15.0",
+    "pytest>=8",
+    "pytest-xdist>=3.8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Eight workers (pytest-xdist): the client tests each take ~10-40 s and run side by side; "-n 0" runs in one process.
+addopts = "-n 8"
+
+[tool.uv]
+package = false

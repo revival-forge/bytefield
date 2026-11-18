@@ -1,0 +1,39 @@
+[package]
+name = "bytefield-server"
+description = "The dedicated server over the sim: players' actions in, snapshots out"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+bytefield-sim = { path = "../sim", default-features = false }
+
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3.3"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }
+
+[features]
+default = []
+
+[dev-dependencies]
+bytefield-testdata = { path = "../testdata" }
+
+# The tests on the base game, under tests/base/ as the other crates' layers; one binary each, because the UDP ones would
+# share their ports in one.
+[[test]]
+name = "depots"
+path = "tests/base/depots.rs"
+
+[[test]]
+name = "memory"
+path = "tests/base/memory.rs"
+
+[[test]]
+name = "udp"
+path = "tests/base/udp.rs"
+
+[[test]]
+name = "udp_abuse"
+path = "tests/base/udp_abuse.rs"

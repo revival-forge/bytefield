@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+# the Bevy client is built on request (`cargo build -p bytefield-client`): the core and its tests
+# never wait for it
+default-members = ["crates/vfs", "crates/con-lang", "crates/content", "crates/formats", "crates/world", "crates/extract", "crates/sim", "crates/server"]
+
+[workspace.package]
+edition = "2024"
+license = "GPL-3.0-or-later"
+version = "0.1.0"
+
+# dependencies (Bevy) optimised even in debug builds; our code stays quick to compile
+[profile.dev.package."*"]
+opt-level = 2
+
+# A release with the debug assertions on (the simulation's finiteness check, [`Sim::assert_finite`], and
+# every `debug_assert!`), for the robustness runs (`examples/monkey` with `--checked`)
+[profile.checked]
+inherits = "release"
+debug-assertions = true
+
+# for what is published: 1–3 % more than `release` on the client, and each link takes minutes, so not for every day
+[profile.dist]
+inherits = "release"
+lto = "thin"

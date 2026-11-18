@@ -1,0 +1,5 @@
+ObjectTemplate.active XWingEngine
+ObjectTemplate.setTorque 120.5
+ObjectTemplate.active XWing
+ObjectTemplate.hasMobilePhysics 1
+*** stray banner ***

@@ -1,0 +1,42 @@
+[package]
+name = "bytefield-client"
+description = "The bytefield viewer/client (Bevy). The simulation never depends on this crate."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "bytefield"
+path = "src/main.rs"
+
+[dependencies]
+mimalloc = { version = "0.1", default-features = false }
+bytefield-vfs = { path = "../vfs" }
+bytefield-con = { path = "../con-lang" }
+bytefield-content = { path = "../content" }
+bytefield-formats = { path = "../formats" }
+bytefield-world = { path = "../world" }
+bytefield-sim = { path = "../sim", default-features = false }
+bytefield-server = { path = "../server", default-features = false }
+# _exit: leaving without the driver's exit handlers (main.rs, quit_now)
+libc = "0.2"
+# sound out: needs libasound2-dev
+cpal = { version = "0.18", optional = true }
+# no audio (alsa) and no gamepads (udev): this machine has no -dev packages for them;
+# and no Wayland (its build needs wayland-client.pc): X11, through XWayland here
+bevy = { version = "0.20", default-features = false, features = [
+    "default_app", "std", "multi_threaded", "bevy_winit", "x11",
+    "3d_api", "bevy_render", "bevy_core_pipeline", "bevy_pbr", "bevy_post_process", "bevy_anti_alias",
+    "keyboard", "mouse", "tonemapping_luts",
+    "bevy_ui", "bevy_ui_render", "bevy_text", "default_font",
+    # (systems by name in the errors: an unnamed one cannot be told from a player's log)
+    "debug",
+] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+
+[features]
+default = ["audio"]
+audio = ["dep:cpal"]
+
+[dev-dependencies]
+bytefield-testdata = { path = "../testdata" }

@@ -1,0 +1,13 @@
+rem made-up data for tests, not from any game
+ObjectTemplate.create PlayerControlObject XWing
+ObjectTemplate.setNetworkableInfo XWingInfo
+ObjectTemplate.addTemplate XWingEngine
+ObjectTemplate.setVehicleIcon "Vehicle/Icon xwing.tga"
+
+ObjectTemplate.create Engine XWingEngine
+ObjectTemplate.setMinRotation 0/0/-10
+ObjectTemplate.setMaxRotation 0/0/1000
+beginrem
+ObjectTemplate.create Wing Ignored
+endrem
+run Physics

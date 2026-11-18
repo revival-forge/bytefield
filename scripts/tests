@@ -1,0 +1,41 @@
+#!/bin/bash
+# The test runs, by content layer (crates/testdata, python/tests/layers.py):
+#   scripts/tests quick   the base game only (BYTEFIELD_LAYERS=base unless set), without the client's tests (Rust and the
+#                         `slow` ones of Python, on Xvfb): each iteration, about 2 minutes
+#   scripts/tests full    every installed layer, the reference mods and HD packs too: closing a batch, at night
+#   scripts/tests ci      no game data at all, as the public CI: what everyone can run
+# Extra arguments go to `cargo test` (e.g. `-p bytefield-sim`). Says at the end how many tests each layer skipped.
+# The AI overlay (taking a level's AI from a reference mod) is off unless the run wants the `ref` layer.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+export PATH="$HOME/.cargo/bin:$PATH"
+mode="${1:-quick}"
+shift || true
+case "$mode" in
+  quick) export BYTEFIELD_LAYERS="${BYTEFIELD_LAYERS:-base}"; workspace=(); pytest_args=(-m "not slow") ;;
+  full) export BYTEFIELD_LAYERS="${BYTEFIELD_LAYERS:-all}"; workspace=(--workspace); pytest_args=() ;;
+  ci) export BYTEFIELD_GAME="$PWD/target/no-game"; export BYTEFIELD_LAYERS=all; workspace=(--workspace --exclude bytefield-client); pytest_args=() ;;
+  *) echo "usage: scripts/tests quick|full|ci [cargo test args]" >&2; exit 2 ;;
+esac
+case ",$BYTEFIELD_LAYERS," in
+  *,ref,*|*,all,*) ;;
+  *) export BYTEFIELD_AI_OVERLAY=0 ;;
+esac
+skips="$PWD/target/test-skips.txt"
+mkdir -p target && : > "$skips"
+export BYTEFIELD_SKIP_LOG="$skips"
+echo "layers: $BYTEFIELD_LAYERS${BYTEFIELD_GAME:+ (game: $BYTEFIELD_GAME)}"
+status=0
+cargo test --release "${workspace[@]}" "$@" > target/cargo-test-last.txt 2>&1 || status=1
+grep -E 'FAILED|panicked|^error' target/cargo-test-last.txt || true
+awk '/^test result/ { p += $4; f += $6; i += $8 } END { printf "cargo test: %d passed, %d failed, %d ignored (target/cargo-test-last.txt)\n", p, f, i }' target/cargo-test-last.txt
+if [ $# = 0 ]; then
+  (cd python && uv run pytest -q -rs "${pytest_args[@]}" 2>&1 | tee "$PWD/../target/pytest-last.txt" | tail -3) || status=1
+fi
+echo "skipped (Rust):"
+cut -f1 "$skips" | sort | uniq -c | sed 's/^/  /'
+if [ -f target/pytest-last.txt ]; then
+  echo "skipped (Python):"
+  awk '/^SKIPPED \[/ { n = substr($2, 2) + 0; r = $0; sub(/^.*: needs/, "needs", r); c[r] += n } END { for (r in c) printf "  %5d %s\n", c[r], r }' target/pytest-last.txt | sort -rn
+fi
+exit $status

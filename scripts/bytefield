@@ -1,0 +1,12 @@
+#!/bin/bash
+# Run the viewer. This machine lacks libxkbcommon-x11/libxcb-xkb: they are unpacked (not
+# installed) under data/runtime-libs with `apt-get download` + `dpkg -x`.
+# What it prints is kept in data/out/logs/ (latest.log, the last), as F11's marks.
+here=$(cd "$(dirname "$0")/.." && pwd)
+export LD_LIBRARY_PATH="$here/data/runtime-libs/root/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+logs="$here/data/out/logs"
+mkdir -p "$logs"
+log="$logs/bytefield-$(date +%Y%m%d-%H%M%S).log"
+ln -sfn "$(basename "$log")" "$logs/latest.log"
+BYTEFIELD_NO_LOG=1 "$here/target/release/bytefield" "$@" 2>&1 | tee "$log"
+exit "${PIPESTATUS[0]}"
