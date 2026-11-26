@@ -297,6 +297,76 @@ impl Obstacle {
     }
 }
 
+impl Obstacle {
+    /// A synthetic obstacle (tests, probes): `tris` over `verts` in world coordinates, each wound so that its normal, by the right
+    /// hand, points out; one BSP leaf with every face, the same mesh for every LOD.
+    pub fn synthetic(name: &str, verts: Vec<V3>, tris: &[[u32; 3]]) -> Obstacle {
+        let faces = tris
+            .iter()
+            .map(|&v| {
+                let [a, b, c] = v.map(|i| verts[i as usize]);
+                let n = crate::vecmath::cross(sub(b, a), sub(c, a));
+                let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+                BspFace { normal: [n[0] / l, n[1] / l, n[2] / l], v, material: 0 }
+            })
+            .collect::<Vec<_>>();
+        let node = BspNode { point: [0.0; 3], normal: [0.0, 1.0, 0.0], faces: (0..faces.len() as u32).collect(), front: None, back: None };
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in &verts {
+            for i in 0..3 {
+                lo[i] = lo[i].min(v[i]);
+                hi[i] = hi[i].max(v[i]);
+            }
+        }
+        let center = [0, 1, 2].map(|i| 0.5 * (lo[i] + hi[i]));
+        let radius = (0..3).map(|i| (hi[i] - center[i]).powi(2)).sum::<f32>().sqrt();
+        let mesh = Arc::new(FaceMesh { vertices: verts, faces, nodes: vec![node], bounds: [lo, hi] });
+        Obstacle {
+            name: name.to_string(),
+            rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            pos: [0.0; 3],
+            scale: [1.0; 3],
+            lods: vec![mesh.clone(), mesh],
+            center,
+            radius,
+            obstacle_class: false,
+            damage: 0.0,
+            projectiles_pass: false,
+            bounds: [lo, hi],
+            carrier: None,
+        }
+    }
+
+    /// A synthetic box from `lo` to `hi`, axis-aligned.
+    pub fn synthetic_box(name: &str, lo: V3, hi: V3) -> Obstacle {
+        let v = |i: u32| [if i & 1 != 0 { hi[0] } else { lo[0] }, if i & 2 != 0 { hi[1] } else { lo[1] }, if i & 4 != 0 { hi[2] } else { lo[2] }];
+        // (0..8: bit 0 x, bit 1 y, bit 2 z) six faces, outward
+        let tris = [[0, 1, 5], [0, 5, 4], [2, 6, 7], [2, 7, 3], [0, 4, 6], [0, 6, 2], [1, 3, 7], [1, 7, 5], [0, 2, 3], [0, 3, 1], [4, 5, 7], [4, 7, 6]];
+        Obstacle::synthetic(name, (0..8).map(v).collect(), &tris)
+    }
+
+    /// A synthetic ladder: a box all of whose faces are of a ladder's material ([`crate::ladder::MATERIALS`]), placed as a
+    /// level's are: at its centre, its box in its own frame (the soldier starts up it from below that point).
+    pub fn synthetic_ladder(name: &str, lo: V3, hi: V3) -> Obstacle {
+        let base = [0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])];
+        let mut o = Obstacle::synthetic_box(name, sub(lo, base), sub(hi, base));
+        let mut mesh = (*o.lods[0]).clone();
+        mesh.faces.iter_mut().for_each(|f| f.material = *crate::ladder::MATERIALS.start());
+        o.lods = vec![Arc::new(mesh)];
+        o.pos = base;
+        o.center = [o.center[0] + base[0], o.center[1] + base[1], o.center[2] + base[2]];
+        o
+    }
+
+    /// A synthetic ramp (a wedge): from height `lo[1]` at z = `lo[2]` up to `hi[1]` at z = `hi[2]`, across x from `lo[0]` to `hi[0]`.
+    pub fn synthetic_ramp(name: &str, lo: V3, hi: V3) -> Obstacle {
+        // 0, 1: the low edge (x lo, x hi); 2, 3: the bottom of the high end; 4, 5: its top
+        let verts = vec![[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]]];
+        let tris = [[0, 4, 5], [0, 5, 1], [0, 1, 3], [0, 3, 2], [2, 3, 5], [2, 5, 4], [0, 2, 4], [1, 5, 3]];
+        Obstacle::synthetic(name, verts, &tris)
+    }
+}
+
 /// `getVertexCollision(lod)`: the LOD asked for if the mesh has it, else LOD 0.
 pub fn pick_lod(lods: &[Arc<FaceMesh>], lod: usize) -> Option<&FaceMesh> {
     lods.get(lod).or_else(|| lods.first()).map(|m| m.as_ref())

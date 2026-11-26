@@ -362,7 +362,7 @@ fn update(
         }
     }
     // the weapon in hand (on foot)
-    let weapon = soldier.filter(|s| s.entry.inside.is_none()).and_then(|s| s.movement.as_ref()).and_then(|m| m.weapon.as_ref());
+    let weapon = soldier.filter(|s| s.entry.inside.is_none()).and_then(|s| s.soldier()).and_then(|m| m.weapon.as_ref());
     let hud = hud_ammo(&weapon.and_then(|w| sim.world.db.object_template(&w.template.name)).and_then(|x| arg(x, "setHudAmmoType")).unwrap_or_default());
     let icon_type = matches!(hud, HudAmmo::Icon | HudAmmo::IconSide(_));
     if let Ok(mut v) = ammo.single_mut() {
@@ -486,7 +486,7 @@ fn top(
     // the pose: standing, crouching or lying (`getPose`), in a vehicle too
     let soldier = p.soldier.filter(|_| p.alive).map(|i| &sim.vehicles[i]);
     let icon = soldier.and_then(|s| {
-        let key = match s.movement.as_ref()?.pose() {
+        let key = match s.soldier()?.pose() {
             0 => "soldierStandingIcon",
             1 => "soldierCrouchIcon",
             _ => "soldierProneIcon",
@@ -668,7 +668,7 @@ fn bars(kind: &str) -> (bool, Option<(bool, bool)>) {
 fn foot_side(g: Res<Game>, mut bars: Query<(&FootSide, &mut Visibility)>, mut clips: Query<(&FootSideClip, &mut Node)>) {
     let sim = &g.session.sim;
     let p = &sim.players[g.player];
-    let w = p.soldier.filter(|_| p.alive).map(|i| &sim.vehicles[i]).filter(|s| s.entry.inside.is_none()).and_then(|s| s.movement.as_ref()).and_then(|m| m.weapon.as_ref());
+    let w = p.soldier.filter(|_| p.alive).map(|i| &sim.vehicles[i]).filter(|s| s.entry.inside.is_none()).and_then(|s| s.soldier()).and_then(|m| m.weapon.as_ref());
     let side = w.and_then(|w| match hud_ammo(&sim.world.db.object_template(&w.template.name).and_then(|x| arg(x, "setHudAmmoType")).unwrap_or_default()) {
         HudAmmo::IconSide(s) => Some((w, s)),
         _ => None,

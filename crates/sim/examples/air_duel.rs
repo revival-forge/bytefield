@@ -1,6 +1,6 @@
 //! Two aircraft already in flight near the middle of the map, one flown by a mind and the other by a mind or by a script, and what
 //! came of it, measured from outside (`Sim::projectiles`, `journal.damage_log`, `vehicles`): the bench for air-to-air fighting.
-//!   air_duel <game> <mod> <level> --a <template> --b <template> [--mind-a bots3[:variant]] [--mind-b bots3|drone:straight|drone:circle:<radius>|drone:weave|drone:climb]
+//!   air_duel <game> <mod> <level> --a <template> --b <template> [--mind-a bots[:variant]] [--mind-b bots|drone:straight|drone:circle:<radius>|drone:weave|drone:climb]
 //!            [--seeds 8] [--seconds 120] [--range 600] [--aspect tail|head|beam|rear] [--height 600] [--drone-speed 110] [--at x,z] [--out file.jsonl]
 //!            [--gunner-a <seat> [--pilot-a drone:straight|drone:circle:<radius>|drone:weave|drone:climb]]
 //!   air_duel <game> <mod> <level> --list-seats <template>[,<template>...]   (the seats of each aircraft and the weapons of each seat; no duel)
@@ -27,7 +27,7 @@
 //!   gun_bearing_s: (`--gunner-a`) seconds with the seat's camera within 1 degree of where `dogfight::lead` says to shoot from the camera (A's velocity
 //!               counted, the muzzle speed of the seat's gun) and B within 450 m
 use bytefield_sim::bot_api::MindMaker;
-use bytefield_sim::bots3::body::dogfight::lead;
+use bytefield_sim::bots::body::dogfight::lead;
 use bytefield_sim::damage::{Source, Status};
 use bytefield_sim::soldier::axis;
 
@@ -134,8 +134,7 @@ impl Pilot {
 
 fn maker(name: &str, level: &str, seed: u64) -> MindMaker {
     match name {
-        "bots3" => bytefield_sim::bots3::maker(level, seed),
-        v if v.starts_with("bots3:") => bytefield_sim::bots3::maker_variant(level, seed, &v["bots3:".len()..].split('+').collect::<Vec<_>>()),
+        n if bytefield_sim::bots::is_name(n) => bytefield_sim::bots::mind(n, level, seed),
         other => panic!("no mind called {other}"),
     }
 }
@@ -293,12 +292,12 @@ fn duel(w: &bytefield_sim::World, cfg: &Config, seed: u64) -> Duel {
         if let Some(dr) = drone.as_mut() {
             let b = &s.vehicles[cb].craft.body;
             let axes = dr.axes(b.rows, b.vel, b.pos[1], t);
-            s.vehicles[sb].movement.as_mut().unwrap().set_input(&axes);
+            s.vehicles[sb].soldier_mut().unwrap().set_input(&axes);
         }
         if let Some(dr) = drone_a.as_mut() {
             let b = &s.vehicles[ca].craft.body;
             let axes = dr.axes(b.rows, b.vel, b.pos[1], t);
-            s.vehicles[sa].movement.as_mut().unwrap().set_input(&axes);
+            s.vehicles[sa].soldier_mut().unwrap().set_input(&axes);
         }
         s.step();
         let t = (s.clock.steps - t0) as f32 * DT;
@@ -433,7 +432,7 @@ fn duel(w: &bytefield_sim::World, cfg: &Config, seed: u64) -> Duel {
             let frames = car.frames_still_cameras();
             let cam = car.parts.iter().position(|q| matches!(q.kind, bytefield_sim::craft::Kind::Camera) && q.seat == gseat);
             let off = cam.and_then(|c| lead(frames[c].pos, ba.vel, pb, bb.vel, gun_muzzle, 0.0).map(|(at, _)| angle(frames[c].child_rows[2], sub(at, frames[c].pos))));
-            let axes = s.vehicles[g].movement.as_ref().map(|m| (m.input.axes[axis::FIRE], m.input.axes[axis::ALT_FIRE]));
+            let axes = s.vehicles[g].soldier().map(|m| (m.input.axes[axis::FIRE], m.input.axes[axis::ALT_FIRE]));
             // where the camera points and where the target is, in the aircraft's frame (azimuth from the nose, elevation)
             let local = |v: V3| {
                 let r = ba.rows;
@@ -537,7 +536,7 @@ fn list_seats(a: &[String], templates: &str) {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 4 {
-        eprintln!("air_duel <game> <mod> <level> --a <template> --b <template> [--mind-a bots3[:variant]] [--mind-b bots3|drone:straight|drone:circle:<radius>|drone:weave|drone:climb] [--seeds 8] [--seconds 120] [--range 600] [--aspect tail|head|beam|rear] [--height 600] [--drone-speed 110] [--out file.jsonl]");
+        eprintln!("air_duel <game> <mod> <level> --a <template> --b <template> [--mind-a bots[:variant]] [--mind-b bots|drone:straight|drone:circle:<radius>|drone:weave|drone:climb] [--seeds 8] [--seconds 120] [--range 600] [--aspect tail|head|beam|rear] [--height 600] [--drone-speed 110] [--out file.jsonl]");
         std::process::exit(2);
     }
     let opt = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
@@ -549,8 +548,8 @@ fn main() {
     let cfg = Config {
         a: need("--a"),
         b: need("--b"),
-        pilot_a: Pilot::parse(&opt("--mind-a").unwrap_or("bots3".into())),
-        pilot_b: Pilot::parse(&opt("--mind-b").unwrap_or("bots3".into())),
+        pilot_a: Pilot::parse(&opt("--mind-a").unwrap_or("bots".into())),
+        pilot_b: Pilot::parse(&opt("--mind-b").unwrap_or("bots".into())),
         seconds: opt("--seconds").map_or(120.0, |x| x.parse().unwrap()),
         range: opt("--range").map_or(600.0, |x| x.parse().unwrap()),
         aspect: match opt("--aspect").as_deref().unwrap_or("tail") {

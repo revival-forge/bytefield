@@ -1,5 +1,5 @@
 //! What a kind of bot knows how to do, seen from outside: no scores, only «can it».
-//!   bot_caps <game> <mod> <level> seat [--mind bots2] [--seconds 60] [--mode conquest]
+//!   bot_caps <game> <mod> <level> seat [--mind bots] [--seconds 60] [--mode conquest]
 //!   bot_caps <game> <mod> <level> round <players> <minutes> [--mind …] [--mode conquest] [--seed N]
 //! `seat`, the synthetic one: for each template with seats, a new round with a bot put in the driver's seat of one of them and an
 //! enemy on foot 60 m ahead. `round`, the real one: a whole round, what the bots did by itself, by template.
@@ -19,14 +19,9 @@ fn class(v: &Vehicle) -> &'static str {
 fn set_mind(s: &mut bytefield_sim::Sim, name: &str, level: &str, seed: u64) {
     s.enable_bots();
     match name {
-        "bots2" => {
+        n if bytefield_sim::bots::is_name(n) => {
             for t in [1, 2] {
-                s.set_minds(t, bytefield_sim::bots2::maker(level, seed));
-            }
-        }
-        "bots3" => {
-            for t in [1, 2] {
-                s.set_minds(t, bytefield_sim::bots3::maker(level, seed));
+                s.set_minds(t, bytefield_sim::bots::mind(n, level, seed));
             }
         }
         other => panic!("no mind called {other}"),
@@ -54,7 +49,7 @@ struct Tally {
 
 impl Tally {
     fn line(&self, level: &str, mind: &str, template: &str) -> serde_json::Value {
-        json!({"level": level, "mind": mind, "template": template, "class": self.class, "boardings": self.boardings, "bots": self.bots.len(),
+        json!({"bots_version": bytefield_sim::bots::VERSION, "level": level, "mind": mind, "template": template, "class": self.class, "boardings": self.boardings, "bots": self.bots.len(),
             "driver_s": self.driver_s.round(), "gunner_s": self.gunner_s.round(), "gunner_shots": self.gunner_shots, "gunner_kills": self.gunner_kills, "path_m": self.path.round(), "top_speed": self.top_speed.round(),
             "top_above_ground": self.top_above_ground.round(), "below_water": self.below_water.round(), "shots": self.shots, "kills": self.kills, "damage": self.damage.round()})
     }
@@ -200,10 +195,10 @@ impl Census {
                 t.gunner_kills += p.kills.saturating_sub(had);
             }
         }
-        self.last_pos = s.vehicles.iter().enumerate().filter(|(_, v)| !v.is_soldier() && !v.removed && v.entry.occupants.iter().flatten().next().is_some()).map(|(j, v)| (j, v.craft.body.pos)).collect();
+        self.last_pos = s.vehicles.iter().enumerate().filter(|(_, v)| !v.has_soldier_contact() && !v.removed && v.entry.occupants.iter().flatten().next().is_some()).map(|(j, v)| (j, v.craft.body.pos)).collect();
         for f in s.journal.fired.get(self.fired_seen..).unwrap_or(&[]) {
             let v = &s.vehicles[f.1];
-            if !v.is_soldier() && let Some(t) = self.by.get_mut(&v.template) {
+            if !v.has_soldier_contact() && let Some(t) = self.by.get_mut(&v.template) {
                 t.shots += 1;
                 if f.3.is_some_and(|k| s.projectiles[k].seat != 0) {
                     t.gunner_shots += 1;
@@ -213,7 +208,7 @@ impl Census {
         self.fired_seen = s.journal.fired.len();
         self.explosives(s);
         for e in s.journal.damage_log.get(self.damage_seen..).unwrap_or(&[]) {
-            if let Some(t) = e.by.and_then(|b| s.vehicles.get(b)).filter(|v| !v.is_soldier()).and_then(|v| self.by.get_mut(&v.template)) {
+            if let Some(t) = e.by.and_then(|b| s.vehicles.get(b)).filter(|v| !v.has_soldier_contact()).and_then(|v| self.by.get_mut(&v.template)) {
                 t.damage += e.amount.max(0.0);
             }
             if e.source == Source::Explosion && e.amount > 0.0 {
@@ -224,7 +219,7 @@ impl Census {
                 });
                 if let Some(kind) = by_blast.map(|b| b.kind) {
                     self.caps.damage[kind] += e.amount;
-                    if !s.vehicles[e.vehicle].is_soldier() {
+                    if !s.vehicles[e.vehicle].has_soldier_contact() {
                         self.caps.vehicles_damaged[kind] += 1;
                         if e.status == Some(bytefield_sim::damage::Status::Destroyed) {
                             self.caps.vehicles_destroyed[kind] += 1;
@@ -293,7 +288,7 @@ impl Census {
     fn on_foot(&mut self, s: &bytefield_sim::Sim, k: usize) {
         let p = &s.players[k];
         let soldier = p.soldier.filter(|_| p.alive).map(|i| &s.vehicles[i]);
-        let m = soldier.and_then(|v| v.movement.as_ref());
+        let m = soldier.and_then(|v| v.soldier());
         if m.is_some_and(|m| m.parachuting()) {
             if self.falling.insert(k) {
                 self.caps.falls += 1;
@@ -360,7 +355,7 @@ impl Census {
 fn on_foot(s: &bytefield_sim::Sim, level: &str, mind: &str, watched: &Census) -> serde_json::Value {
     let mut by_weapon: BTreeMap<String, u32> = BTreeMap::new();
     for f in &s.journal.fired {
-        if s.vehicles[f.1].is_soldier() {
+        if s.vehicles[f.1].has_soldier_contact() {
             let w = f.3.map_or("(no projectile)".to_string(), |i| s.projectiles[i].template.name.clone());
             *by_weapon.entry(w).or_default() += 1;
         }
@@ -373,7 +368,7 @@ fn on_foot(s: &bytefield_sim::Sim, level: &str, mind: &str, watched: &Census) ->
             _ => {}
         }
     }
-    json!({"level": level, "mind": mind, "foot": true, "caps": watched.caps.json(), "shots_by_projectile": by_weapon, "healed": heal.round(), "repaired": repair.round(),
+    json!({"bots_version": bytefield_sim::bots::VERSION, "level": level, "mind": mind, "foot": true, "caps": watched.caps.json(), "shots_by_projectile": by_weapon, "healed": heal.round(), "repaired": repair.round(),
         "captures": s.players.iter().map(|p| p.captures).sum::<u32>(), "kills": s.players.iter().map(|p| p.kills).sum::<u32>(), "deaths": s.players.iter().map(|p| p.deaths).sum::<u32>(), "tks": s.players.iter().map(|p| p.tks).sum::<u32>()})
 }
 
@@ -385,7 +380,7 @@ fn main() {
     }
     let opt = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).map(|s| s.as_str());
     let mode = opt("--mode").unwrap_or("conquest");
-    let mind = opt("--mind").unwrap_or("bots2");
+    let mind = opt("--mind").unwrap_or("bots");
     let seed: u64 = opt("--seed").map_or(0, |n| n.parse().unwrap());
     let level = &a[3];
     let w = bytefield_sim::World::load(Path::new(&a[1]), &a[2], level, mode).expect("world");
@@ -426,7 +421,7 @@ fn main() {
     for _ in 0..150 {
         first.step();
     }
-    let mut templates: Vec<String> = first.vehicles.iter().filter(|v| v.in_world() && !v.is_soldier() && !v.entry.seats.is_empty()).map(|v| v.template.clone()).collect();
+    let mut templates: Vec<String> = first.vehicles.iter().filter(|v| v.in_world() && !v.has_soldier_contact() && !v.entry.seats.is_empty()).map(|v| v.template.clone()).collect();
     templates.sort();
     templates.dedup();
     drop(first);
@@ -517,7 +512,7 @@ mod tests {
         let parked = s.spawn_vehicle("T34", [1700.0, ground(1700.0, 703.0) + 1.0, 703.0], [0.0; 3]).unwrap();
         let sapper = s.spawn_vehicle("GermanDesertSoldier", [1700.0, ground(1700.0, 700.0) + 1.0, 700.0], [0.0; 3]).unwrap();
         assert!(s.vehicles[sapper].give_kit(w.kit_weapons("German_Engineer_Desert"), Some("ExpPack")));
-        s.vehicles[sapper].movement.as_mut().unwrap().has_player = true;
+        s.vehicles[sapper].soldier_mut().unwrap().has_player = true;
         let mine = s.add_projectile("LandmineProjectile", &shot([1500.0, y + 0.3, 715.0])).unwrap();
         s.projectiles[mine].owner = Some(sapper);
         let mut c = Census::default();
@@ -528,7 +523,7 @@ mod tests {
             b.vel = [0.0, 0.0, 10.0];
             // four charges, one press each 45 frames, then the detonator
             let press = n % 45 < 2 && n < 45 * 5;
-            s.vehicles[sapper].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, if press { 1.0 } else { 0.0 })]);
+            s.vehicles[sapper].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, if press { 1.0 } else { 0.0 })]);
             s.step();
             c.step(&s);
         }
@@ -548,7 +543,7 @@ mod tests {
         s.vehicles[i].craft.body.pos = [at[0], at[1] + 150.0, at[2]];
         s.vehicles[i].craft.body.vel = [0.0, -20.0, 0.0];
         for _ in 0..30 * 40 {
-            s.vehicles[i].movement.as_mut().unwrap().set_input(&[]);
+            s.vehicles[i].soldier_mut().unwrap().set_input(&[]);
             s.step();
             c.step(&s);
             if c.caps.falls > 0 && c.falling.is_empty() {
@@ -568,11 +563,11 @@ mod tests {
         let y = s.vehicles[i].craft.body.pos[1];
         let ladder = bytefield_sim::ladder::Ladder { pos: [0.0; 3], rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], bounds: [[0.0; 3], [1.0; 3]], material: 192 };
         // (not by the sim's step: what the census does with the state)
-        s.vehicles[i].movement.as_mut().unwrap().ladder = Some(ladder);
+        s.vehicles[i].soldier_mut().unwrap().ladder = Some(ladder);
         c.on_foot(&s, p);
         s.vehicles[i].craft.body.pos[1] = y + 6.0;
         c.on_foot(&s, p);
-        s.vehicles[i].movement.as_mut().unwrap().ladder = None;
+        s.vehicles[i].soldier_mut().unwrap().ladder = None;
         c.on_foot(&s, p);
         assert_eq!((c.caps.climbs, c.caps.climb_m.round()), (1, 6.0), "{:?}", c.caps);
     }

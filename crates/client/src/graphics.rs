@@ -54,6 +54,12 @@ pub enum Row {
     FixedLight,
     WaterGamma,
     MeshShade,
+    Grass,
+    Clouds,
+    Decals,
+    Heat,
+    Relief,
+    Aerial,
     ViewDistance,
     Fov,
     Vsync,
@@ -62,10 +68,10 @@ pub enum Row {
 
 /// The video page's rows, and the experimental page's: what no profile turns on
 /// and seen in a few screenshots, not played.
-pub const VIDEO: &[Row] = &[Row::Profile, Row::Aa, Row::Sharpen, Row::Aniso, Row::Textures, Row::MipBias, Row::Shadows, Row::ObjectShadows, Row::EnvMap, Row::FixedLight, Row::WaterGamma, Row::MeshShade, Row::Lightmaps, Row::Reflections, Row::Coverage, Row::RenderScale];
+pub const VIDEO: &[Row] = &[Row::Profile, Row::Aa, Row::Sharpen, Row::Aniso, Row::Textures, Row::MipBias, Row::Shadows, Row::ObjectShadows, Row::EnvMap, Row::FixedLight, Row::WaterGamma, Row::MeshShade, Row::Lightmaps, Row::Reflections, Row::Coverage, Row::SoftParticles, Row::DynLights, Row::RenderScale];
 /// On the general page, under the volume and the language
 pub const GENERAL: &[Row] = &[Row::ViewDistance, Row::Fov, Row::Vsync, Row::Fullscreen];
-pub const EFFECTS: &[Row] = &[Row::Bloom, Row::Look, Row::Vignette, Row::MotionBlur, Row::Ssao, Row::ContactShadows, Row::SoftParticles, Row::DynLights, Row::Oit, Row::Dof, Row::WaterFx];
+pub const EFFECTS: &[Row] = &[Row::Bloom, Row::Look, Row::Vignette, Row::MotionBlur, Row::Ssao, Row::ContactShadows, Row::Oit, Row::Dof, Row::WaterFx, Row::Grass, Row::Clouds, Row::Decals, Row::Heat, Row::Relief, Row::Aerial];
 
 const SHARPEN: &[f32] = &[0.0, 0.2, 0.4, 0.6];
 const ANISO: &[f32] = &[1.0, 2.0, 4.0, 8.0, 16.0];
@@ -75,6 +81,14 @@ const BLOOM: &[f32] = &[0.0, 0.15, 0.3];
 const VIGNETTE: &[f32] = &[0.0, 0.25, 0.5];
 /// the shutter's angle
 const MOTION_BLUR: &[f32] = &[0.0, 0.25, 0.5, 1.0];
+/// the grass's density
+const GRASS: &[f32] = &[0.0, 0.5, 1.0];
+/// how dark the clouds' shadows are
+const CLOUDS: &[f32] = &[0.0, 0.5, 1.0];
+/// how deep the terrain's relief, and how thick the aerial perspective
+/// (in tenths: at their most both are strong, and the right strength is a matter of taste)
+const RELIEF: &[f32] = &[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+const AERIAL: &[f32] = RELIEF;
 const RENDER_SCALE: &[f32] = &[1.0, 0.85, 0.75, 0.5];
 const VIEW: &[f32] = &[1.0, 1.5, 2.0, 3.0];
 /// the world's vertical field of view, degrees
@@ -103,6 +117,12 @@ impl Row {
             Row::Dof => "dof",
             Row::RenderScale => "render_scale",
             Row::WaterFx => "water_fx",
+            Row::Grass => "grass",
+            Row::Clouds => "clouds",
+            Row::Decals => "decals",
+            Row::Heat => "heat",
+            Row::Relief => "relief",
+            Row::Aerial => "aerial",
             Row::DynLights => "dyn_lights",
             Row::Oit => "oit",
             Row::Lightmaps => "lightmaps",
@@ -144,6 +164,12 @@ impl Row {
             Row::Dof => "GFX_DOF",
             Row::RenderScale => "GFX_RENDER_SCALE",
             Row::WaterFx => "GFX_WATER_FX",
+            Row::Grass => "GFX_GRASS",
+            Row::Clouds => "GFX_CLOUDS",
+            Row::Decals => "GFX_DECALS",
+            Row::Heat => "GFX_HEAT",
+            Row::Relief => "GFX_RELIEF",
+            Row::Aerial => "GFX_AERIAL",
             Row::DynLights => "GFX_DYN_LIGHTS",
             Row::Oit => "GFX_OIT",
             Row::Lightmaps => "GFX_LIGHTMAPS",
@@ -204,6 +230,12 @@ impl Row {
             Row::Dof => yes_no(g.dof),
             Row::RenderScale => percent(g.render_scale),
             Row::WaterFx => yes_no(g.water_fx),
+            Row::Grass => percent(g.grass),
+            Row::Clouds => percent(g.clouds),
+            Row::Decals => yes_no(g.decals),
+            Row::Heat => yes_no(g.heat),
+            Row::Relief => percent(g.relief),
+            Row::Aerial => percent(g.aerial),
             Row::DynLights => yes_no(g.dyn_lights),
             Row::Oit => yes_no(g.oit),
             Row::Lightmaps => yes_no(g.lightmaps),
@@ -257,6 +289,12 @@ impl Row {
             Row::Dof => o.dof = Some(!g.dof),
             Row::RenderScale => o.render_scale = Some(cycle(RENDER_SCALE, g.render_scale, d)),
             Row::WaterFx => o.water_fx = Some(!g.water_fx),
+            Row::Grass => o.grass = Some(cycle(GRASS, g.grass, d)),
+            Row::Clouds => o.clouds = Some(cycle(CLOUDS, g.clouds, d)),
+            Row::Decals => o.decals = Some(!g.decals),
+            Row::Heat => o.heat = Some(!g.heat),
+            Row::Relief => o.relief = Some(cycle(RELIEF, g.relief, d)),
+            Row::Aerial => o.aerial = Some(cycle(AERIAL, g.aerial, d)),
             Row::DynLights => o.dyn_lights = Some(!g.dyn_lights),
             Row::Oit => o.oit = Some(!g.oit),
             Row::Lightmaps => o.lightmaps = Some(!g.lightmaps),
@@ -339,11 +377,13 @@ fn grading(look: Look) -> ColorGrading {
 pub fn apply(
     mut commands: Commands,
     mut last: Local<Option<Graphics>>,
+    mut last_prepass: Local<Option<bool>>,
     // (the new ones, and the sun to change)
     mut new_sun: ParamSet<(Query<(), Or<(Added<DistanceFog>, Added<PostCamera>, Added<DirectionalLight>)>>, Query<(&mut CascadeShadowConfig, &mut DirectionalLight)>)>,
     cameras: Query<(Entity, Has<PostCamera>, Has<ReflectionCamera>, Has<WorldCamera>), With<DistanceFog>>,
     mut shadow_map: ResMut<DirectionalLightShadowMap>,
     atm: Option<Res<Atmosphere>>,
+    adapter: Option<Res<bevy::render::renderer::RenderAdapterInfo>>,
 ) {
     let g = crate::assets::graphics();
     if *last == Some(g) && new_sun.p0().is_empty() {
@@ -352,6 +392,17 @@ pub fn apply(
     let Some(atm) = atm else { return };
     *last = Some(g);
     let temporal = g.aa == Aa::Taa;
+    // (the depth prepass speeds up an integrated GPU, which shares memory with the CPU and saves overdraw there, and costs ~10 % on a
+    // discrete one in the densest scene; `BYTEFIELD_PREPASS=1|0` forces it on or off)
+    let integrated = adapter.as_ref().is_some_and(|a| format!("{:?}", a.device_type) == "IntegratedGpu");
+    let prepass = match std::env::var("BYTEFIELD_PREPASS").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => integrated,
+    };
+    if last_prepass.replace(prepass) != Some(prepass) {
+        bevy::log::info!("graphics: depth prepass forced by the adapter or BYTEFIELD_PREPASS: {prepass} (integrated GPU: {integrated}, adapter known: {})", adapter.is_some());
+    }
     for (e, post, mirror, world) in &cameras {
         let mut c = commands.entity(e);
         c.insert((atm.distance_fog(), bevy::render::camera::MipBias(g.mip_bias)));
@@ -395,8 +446,8 @@ pub fn apply(
             if !temporal && g.motion_blur <= 0.0 {
                 c.remove::<MotionVectorPrepass>();
             }
-            if g.soft_particles || g.water_fx {
-                // (the sprites and the water read it: `shaders/particle.wesl`, `water.wesl`)
+            if prepass || g.soft_particles || g.water_fx || g.decals {
+                // (the sprites, the water and the marks read it: `shaders/particle.wesl`, `water.wesl`, Bevy's forward decals)
                 c.insert(DepthPrepass);
             } else if !temporal && g.motion_blur <= 0.0 && !g.ssao && !g.contact_shadows {
                 c.remove::<DepthPrepass>();
@@ -441,7 +492,9 @@ pub fn apply(
             c.remove::<Bloom>();
         }
         // (with no tone mapping Bevy skips the pass that grades: linear is the same curve, clamped)
-        c.insert(if g.look == Look::Neutral { (Tonemapping::None, ColorGrading::default()) } else { (Tonemapping::Linear, grading(g.look)) });
+        // (dithering only with a tone mapping: Bevy warns of it on every camera otherwise)
+        use bevy::core_pipeline::tonemapping::DebandDither;
+        c.insert(if g.look == Look::Neutral { (Tonemapping::None, DebandDither::Disabled, ColorGrading::default()) } else { (Tonemapping::Linear, DebandDither::Enabled, grading(g.look)) });
         if g.vignette > 0.0 {
             c.insert(Vignette { intensity: g.vignette, ..default() });
         } else {
@@ -450,7 +503,7 @@ pub fn apply(
     }
     for (mut s, mut light) in &mut new_sun.p1() {
         *s = cascades(g.shadow_quality);
-        light.contact_shadows_enabled = g.contact_shadows && light.illuminance > 0.0;
+        light.contact_shadows_enabled = g.contact_shadows && light.illuminance > 0.0 && light.shadow_maps_enabled;
     }
     let size = shadow_map_size(g.shadow_quality);
     if shadow_map.size != size {

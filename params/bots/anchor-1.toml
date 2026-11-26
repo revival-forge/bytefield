@@ -1,0 +1,6 @@
+# The fixed rival from 1.19.0 (24-nov-2026): bots with `prone-fight` on by default (lying down to fight an enemy far, the first
+# fighting tweak that beat anchor 0: +0.57 and +0.23 tickets per round, the second with fresh seeds), every other experimental
+# variant off and every value at its default. Never edited: a new anchor is a new file. (The one change, at 1.20.0: its mind is named
+# `bots:no-fps`, so that it keeps playing as 1.19.0 once the five FPS tweaks became the default; same rounds as before.)
+mind = "bots:no-fps"
+about = "anchor 1: bots 1.19.0 (prone-fight by default), defaults, variants off"

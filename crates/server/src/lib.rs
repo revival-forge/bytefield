@@ -16,7 +16,7 @@ pub mod udp;
 /// The server's step.
 pub const TICK: f64 = 1.0 / 30.0;
 
-/// The round as the client's own (`play::start`): conquest, and `bots` bots by turns (`bots2`, or
+/// The round as the client's own (`play::start`): conquest, and `bots` bots by turns (`bots`, or
 /// the other ones if this build has them and `better`).
 pub fn round(world: &'static bytefield_sim::World, bots: usize, better: bool) -> Sim<'static> {
     let mut sim = Sim::new(world, TICK);
@@ -579,7 +579,7 @@ fn fit(d: &mut Delta, sim: &Sim, own: &[usize], base_len: usize, joining: bool, 
     d.actions = actions;
     let eye = own.last().map(|&k| {
         let (v, b) = (&sim.vehicles[k], &sim.vehicles[k].craft.body);
-        (b.pos, v.movement.as_ref().map_or(b.rows[2], |m| m.view(b, [0.0; 2]).0[2]))
+        (b.pos, v.soldier().map_or(b.rows[2], |m| m.view(b, [0.0; 2]).0[2]))
     });
     for &k in rest.keys() {
         waited[k] += eye.map_or(1.0, |(e, ahead)| weight(&sim.vehicles[k].craft.body, e, ahead, view));

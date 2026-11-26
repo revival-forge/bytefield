@@ -1,7 +1,7 @@
-//! Which conquest flags cannot be taken standing on the ground (or swimming)? bots3's team head leaves those out of its attack
-//! targets unless a teammate has been inside one (`bots3::team::reachable_on_foot`). One line per flag out of reach, per level.
+//! Which conquest flags cannot be taken standing on the ground (or swimming)? bots's team head leaves those out of its attack
+//! targets unless a teammate has been inside one (`bots::team::reachable_on_foot`). One line per flag out of reach, per level.
 //!   flag_reach <game> <mod> [<mod>...]
-use bytefield_sim::bots3::team::reachable_on_foot;
+use bytefield_sim::bots::team::reachable_on_foot;
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();

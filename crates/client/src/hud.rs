@@ -408,7 +408,7 @@ fn feed(g: &Game, lex: &Lexicon, f: &mut Feed) {
             Some((_, a)) if a == *k => fill(&tr(lex, "SUICIDE"), &[&who(g, lex, *k)]),
             Some((b, a)) => {
                 let v = &sim.vehicles[b];
-                let with = v.movement.as_ref().and_then(|m| m.weapon.as_ref()).map_or(v.template.clone(), |w| w.template.name.clone());
+                let with = v.soldier().and_then(|m| m.weapon.as_ref()).map_or(v.template.clone(), |w| w.template.name.clone());
                 format!("{} {} {} ({with})", who(g, lex, a), tr(lex, "DEFAULT_KILL_TEXT"), who(g, lex, *k))
             }
             None if *k == g.player => tr(lex, "YOU_DIED"),
@@ -539,7 +539,7 @@ pub fn status(g: &Game) -> String {
                 }
                 None => {
                     let d = |v: &bytefield_sim::mover::Vehicle| (0..3).map(|j| (v.craft.body.pos[j] - b[j]).powi(2)).sum::<f32>().sqrt();
-                    if let Some((v, dist)) = sim.vehicles.iter().filter(|v| !v.removed && !v.is_soldier() && !v.entry.seats.is_empty()).map(|v| (v, d(v))).min_by(|a, b| a.1.total_cmp(&b.1))
+                    if let Some((v, dist)) = sim.vehicles.iter().filter(|v| !v.removed && !v.has_soldier_contact() && !v.entry.seats.is_empty()).map(|v| (v, d(v))).min_by(|a, b| a.1.total_cmp(&b.1))
                         && dist < 40.0
                     {
                         // where it is from where the soldier faces (degrees, + to its right)
@@ -547,7 +547,7 @@ pub fn status(g: &Game) -> String {
                         let side = (f[2] * to[0] - f[0] * to[1]).atan2(f[0] * to[0] + f[2] * to[1]).to_degrees();
                         l += &format!("   near: {} at {dist:.0} m, {side:+.0} degrees", v.template);
                     }
-                    if let Some(w) = s.movement.as_ref().and_then(|m| m.weapon.as_ref()) {
+                    if let Some(w) = s.soldier().and_then(|m| m.weapon.as_ref()) {
                         let mag = w.mags.first().copied().unwrap_or(0);
                         let rest: i32 = w.mags.iter().skip(1).sum();
                         l += &format!("   {} {mag} / {rest}{}", w.template.name, if w.reload > 0.0 { " (recargando)" } else { "" });
@@ -692,7 +692,7 @@ fn cross_hair(g: &Game) -> Option<CrossKind> {
             (v.entry.seats.get(seat).map(|seat| seat.pco.clone()), w)
         }
         None => {
-            let w = s.movement.as_ref().and_then(|m| m.weapon.as_ref());
+            let w = s.soldier().and_then(|m| m.weapon.as_ref());
             (w.map(|w| w.template.name.clone()), w)
         }
     };

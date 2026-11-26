@@ -4,7 +4,7 @@ The Rust crates Bytefield's programs are built with, and their licences, generat
 Bytefield itself is GPL-3.0-or-later (`LICENSE`); code adapted from other projects is credited in `CREDITS.md`.
 
 ## Overview
-- MIT License (428)
+- MIT License (429)
 - Unicode License v3 (23)
 - Apache License 2.0 (13)
 - GNU General Public License v3.0 or later (8)
@@ -5229,6 +5229,7 @@ Used by:
 - [objc2 0.6.5](https://github.com/madsmtm/objc2)
 - [profiling 1.0.18](https://github.com/aclysma/profiling)
 - [r-efi 6.0.0](https://github.com/r-efi/r-efi)
+- [rerecast 1.0.0](https://github.com/janhohenheim/rerecast)
 - [taffy 0.14.0](https://github.com/DioxusLabs/taffy)
 - [wesl-core 0.1.0](https://github.com/webgpu-tools/wesl-rs)
 - [wesl-macros 0.6.0](https://github.com/webgpu-tools/wesl-rs)

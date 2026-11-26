@@ -1,0 +1,5 @@
+# The fixed rival of the learning loop: bots as of 1.18.0 (23-nov-2026), with every experimental variant off and every value at
+# its default. Never edited: a new anchor is a new file. (The one change, at 1.19.0: its mind is named `bots:no-prone-fight`, so
+# that it keeps playing as 1.18.0 once lying down to fight became the default; same rounds as before. At 1.20.0, `bots:no-prone-fight+no-fps`, the same way.)
+mind = "bots:no-prone-fight+no-fps"
+about = "anchor 0: bots 1.18.0, defaults, variants off"

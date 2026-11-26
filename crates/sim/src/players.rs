@@ -573,7 +573,7 @@ impl crate::Sim<'_> {
                 // T72's gunner's US_Sniper goes the frame he dies; on foot it lies 30 s)
                 if let Some(i) = sol {
                     let seated = self.vehicles[i].entry.inside.is_some();
-                    let kit = self.vehicles[i].movement.as_ref().and_then(|m| m.kit);
+                    let kit = self.vehicles[i].soldier().and_then(|m| m.kit);
                     self.drop_kit(i, true);
                     if seated && let Some(t) = kit.and_then(|k| self.items.get_mut(k)) {
                         t.removed = true;
@@ -615,7 +615,7 @@ impl crate::Sim<'_> {
                     None => SPAWN_DELAY,
                 };
                 if let Some(v) = sol.and_then(|i| self.vehicles.get_mut(i))
-                    && v.movement.is_some()
+                    && v.soldier().is_some()
                 {
                     // nobody drives it now: without the input, the speed it last asked of the ground would stay, and the body walk on
                     v.set_walk([0.0; 3]);
@@ -743,7 +743,7 @@ impl crate::Sim<'_> {
         if let Some(kit) = kit {
             let ws = self.world.kit_weapons(&kit);
             self.vehicles[i].give_kit(ws, None);
-            if let Some(m) = self.vehicles[i].movement.as_mut() {
+            if let Some(m) = self.vehicles[i].soldier_mut() {
                 m.kit_parts = self.world.kit_parts(&kit);
             }
             self.hand_kit(i, &kit);
@@ -751,7 +751,7 @@ impl crate::Sim<'_> {
         // The soldier's enter: a bot's soldier runs at 0.7–1 of the speeds, by `rand`
         // (in the FPU's long double, rounded once)
         let speed_mod = if ai { (((self.rng.next() & 31) as f64 * (0.3f32 / 31.0) as f64 + 0.7f32 as f64) as f32).min(1.0) } else { 1.0 };
-        if let Some(m) = self.vehicles[i].movement.as_mut() {
+        if let Some(m) = self.vehicles[i].soldier_mut() {
             m.has_player = true;
             m.human = !ai;
             m.speed_mod = speed_mod;
@@ -836,7 +836,7 @@ mod tests {
         }
         let gun = (0..s.vehicles.len()).find(|&i| s.vehicles[i].fixed).unwrap();
         let gunner = s.players[a].soldier.unwrap();
-        let kit = s.vehicles[gunner].movement.as_ref().and_then(|m| m.kit).expect("a kit");
+        let kit = s.vehicles[gunner].soldier().and_then(|m| m.kit).expect("a kit");
         s.enter(gunner, gun, 0);
         s.step();
         s.give_damage(gunner, 1000.0, crate::damage::Source::Outside);
@@ -970,7 +970,7 @@ mod tests {
         let at = sol.craft.body.pos;
         let c = s.modes.conquest.as_ref().unwrap();
         assert!(c.groups[&last].spawns.iter().any(|sp| (sp.pos[0] - at[0]).abs() < 1.0 && (sp.pos[2] - at[2]).abs() < 1.0), "at {at:?}");
-        assert_eq!(sol.movement.as_ref().unwrap().weapon.as_ref().map(|w| w.template.name.as_str()), Some("Sg44"));
+        assert_eq!(sol.soldier().unwrap().weapon.as_ref().map(|w| w.template.name.as_str()), Some("Sg44"));
         assert_eq!(s.players[p].kit, 1);
         // its group goes to the other team: it spawns in the first of its own
         s.modes.conquest.as_mut().unwrap().groups.get_mut(&last).unwrap().team = 2;
@@ -1021,16 +1021,16 @@ mod tests {
         }
         let v = s.players[p].soldier.unwrap();
         let head = |s: &crate::Sim| {
-            let sk = s.vehicles[v].movement.as_ref().unwrap().skeleton.as_ref().unwrap();
+            let sk = s.vehicles[v].soldier().unwrap().skeleton.as_ref().unwrap();
             sk.bone_pos(sk.file.index("Bip01 Head").unwrap())[1]
         };
         let standing = head(&s);
         // a hit it survives only moves the upper body
         s.give_damage(v, 1.0, crate::damage::Source::Hit);
-        let m = s.vehicles[v].movement.as_ref().unwrap();
+        let m = s.vehicles[v].soldier().unwrap();
         assert_eq!(m.upper.state, m.machine.find("Ub_HitChestStand"));
         s.give_damage(v, 1000.0, crate::damage::Source::Hit);
-        let m = s.vehicles[v].movement.as_ref().unwrap();
+        let m = s.vehicles[v].soldier().unwrap();
         let name = |i: Option<usize>| i.map(|i| m.machine.states[i].name.clone()).unwrap_or_default();
         assert!(name(m.lower.state).starts_with("Lb_Die"), "{}", name(m.lower.state));
         assert!(name(m.upper.state).starts_with("Ub_Die"), "{}", name(m.upper.state));

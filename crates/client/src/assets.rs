@@ -35,6 +35,10 @@ pub struct Cache {
     /// the materials with `textureFade true` (in vanilla, only the black boxes `texture/black_o` that stand for a house's
     /// inside from afar): `level.rs` fades them in with the distance
     pub faded: std::collections::HashSet<AssetId<StandardMaterial>>,
+    /// the blended ones with `lighting false` (not additive: the blurred rotors' discs): `envmap::swap` blends them in gamma, as D3D8
+    pub unlit_blended: std::collections::HashSet<AssetId<StandardMaterial>>,
+    /// each `standardmesh` file's `GeometryTemplate.alphaTestValue` (by lowercase file), see [`Cache::set_alpha_tests`]
+    alpha_tests: HashMap<String, f32>,
 }
 
 /// Textures by name, each loaded once, and where the level looks first.
@@ -65,6 +69,22 @@ impl Cache {
         info!("textures: alternative paths {:?}", self.textures.alternative);
     }
 
+    /// The `GeometryTemplate.alphaTestValue`s (before anything loads): a `.rs` without `alphaTestRef` is cut there. Level 2, from
+    /// captures: the M1A1's rear rack (`M1A1_rack`, DXT1 with its gaps at alpha 0, `alphaTestValue 0.08` and no test in its `.rs`)
+    /// shows the turret through the bars in the original, black in ours without it. All 44 in the data are 0.08 (the rack, the
+    /// Panzer IV's, Chi-Ha's and BMP's wheels, the barbed wire), and per file: no file has two values.
+    pub fn set_alpha_tests(&mut self, db: &bytefield_con::templates::TemplateDb) {
+        self.alpha_tests = db
+            .templates
+            .iter()
+            .filter(|((ns, _), _)| ns.eq_ignore_ascii_case("geometrytemplate"))
+            .filter_map(|(_, t)| {
+                let v = t.get("alphatestvalue")?.first()?.trim().parse::<f32>().ok()?;
+                Some((t.get("file")?.first()?.replace('\\', "/").trim_start_matches('/').to_lowercase(), v))
+            })
+            .collect();
+    }
+
     /// A texture by name (`.dds` or `.tga`, also under `texture/`), loaded once.
     pub fn texture(&mut self, vfs: &Vfs, name: &str, images: &mut Assets<Image>) -> Option<Handle<Image>> {
         texture(vfs, name, false, images, &mut self.textures)
@@ -78,7 +98,10 @@ impl Cache {
             return p.clone();
         }
         let p = match kind {
-            "standardmesh" | "animatedmesh" => load_sm(vfs, file, meshes, materials, images, &mut self.textures, &mut self.envmapped, &mut self.lit, &mut self.faded),
+            "standardmesh" | "animatedmesh" => {
+                let alpha_test = self.alpha_tests.get(file.trim_start_matches('/').to_lowercase().as_str()).copied();
+                load_sm(vfs, file, alpha_test, meshes, materials, images, &mut self.textures, &mut self.envmapped, &mut self.lit, &mut self.faded, &mut self.unlit_blended)
+            }
             "treemesh" => load_tm(vfs, file, meshes, materials, images, &mut self.textures, self.tree_light.unwrap_or(Color::WHITE)),
             _ => Vec::new(),
         };
@@ -574,6 +597,7 @@ fn texture(vfs: &Vfs, name: &str, rgba: bool, images: &mut Assets<Image>, texcac
 fn load_sm(
     vfs: &Vfs,
     file: &str,
+    alpha_test: Option<f32>,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
@@ -581,6 +605,7 @@ fn load_sm(
     envmapped: &mut std::collections::HashSet<AssetId<StandardMaterial>>,
     lit: &mut HashMap<AssetId<StandardMaterial>, Vec3>,
     faded: &mut std::collections::HashSet<AssetId<StandardMaterial>>,
+    unlit_blended: &mut std::collections::HashSet<AssetId<StandardMaterial>>,
 ) -> Parts {
     let Ok(bytes) = vfs.read(&format!("standardmesh/{file}.sm")) else { return Vec::new() };
     let Ok(mesh) = sm::parse(&bytes) else { return Vec::new() };
@@ -590,7 +615,9 @@ fn load_sm(
         .iter()
         .map(|m| {
             let sub = shaders.iter().find(|s| s.name.eq_ignore_ascii_case(&m.name));
-            let cutoff = sub.filter(|s| !s.transparent).and_then(|s| s.alpha_test);
+            // (its own `alphaTestRef` first, else its geometry's `alphaTestValue`)
+            let own = sub.and_then(|s| s.alpha_test).or(alpha_test);
+            let cutoff = sub.filter(|s| !s.transparent).and(own);
             // A file that no archive has is what the texture manager gives for any name it lacks, `texture/defaultTexture.dds` (128² DXT5,
             // a flat 76, 72, 74), as for a missing lightmap. Read in the original's rendering: the subset of
             // DC_First_Light's `air_runway_m1` whose `.rs` names a missing file gets that texture in stage 0.
@@ -609,15 +636,14 @@ fn load_sm(
             {
                 keep_coverage(&mut img, cut);
             }
-            // `blendDest one` adds to what is behind (flashes, fire): blended by its alpha here;
-            // `lighting false`: as it is
+            // `blendDest one` adds to what is behind (flashes, fire, GC's lightsabers and track lights): Bevy's
+            // [`AlphaMode::Add`] (colour × alpha, added); `lighting false`: as it is
             let key = |k: &str| sub.and_then(|s| s.keys.get(k)).map(|v| v.trim().trim_end_matches(';').to_ascii_lowercase());
             let additive = sub.is_some_and(|s| s.transparent) && key("blenddest").as_deref() == Some("one");
             let alpha = match sub {
-                // (Bevy's [`AlphaMode::Add`] drew nothing on the first person's camera: blended)
-                _ if additive => AlphaMode::Blend,
+                _ if additive => AlphaMode::Add,
                 Some(s) if s.transparent => AlphaMode::Blend,
-                Some(s) if s.alpha_test.is_some() => cut_by_alpha(s.alpha_test.unwrap()),
+                Some(_) if own.is_some() => cut_by_alpha(own.unwrap()),
                 _ => AlphaMode::Opaque,
             };
             let mat = materials.add(StandardMaterial {
@@ -632,8 +658,8 @@ fn load_sm(
                 reflectance: 0.0,
                 ..default()
             });
-            // (the glass too: not in the reference run, but DC's `windowdirt` is dark and the original's glass tan: the cube.
-            // The additive ones, no: flashes and fire)
+            // (the glass too, blended: the original draws the Mi-8's windscreen with the same stage 1 on the cube, blended 5/6, and with
+            // the reflection on both tint the sand and sky alike, 230,198,139 against 231,197,138. The additive ones, no: flashes and fire)
             if key("envmap").as_deref() == Some("true") && key("lighting").as_deref() != Some("false") && !additive {
                 envmapped.insert(mat.id());
             }
@@ -642,6 +668,9 @@ fn load_sm(
             }
             if key("texturefade").as_deref() == Some("true") {
                 faded.insert(mat.id());
+            }
+            if key("lighting").as_deref() == Some("false") && sub.is_some_and(|s| s.transparent) && !additive {
+                unlit_blended.insert(mat.id());
             }
             (meshes.add(sm_mesh(m)), mat)
         })
@@ -713,6 +742,21 @@ fn load_tm(
 #[cfg(test)]
 mod tests {
     use bevy::prelude::*;
+
+    /// The M1A1's rear rack has no `alphaTestRef` in its `.rs`: its geometry's `alphaTestValue` cuts it (its gaps showed black).
+    #[test]
+    fn a_geometry_s_alpha_test_cuts_its_mesh() {
+        let game = bytefield_testdata::require!(Base, Dc);
+        let w = bytefield_sim::World::load(&game, "DC_Final", "Aberdeen", "conquest").unwrap();
+        let mut cache = super::Cache::default();
+        cache.set_alpha_tests(&w.db);
+        let (mut meshes, mut materials, mut images) = (Assets::<Mesh>::default(), Assets::<StandardMaterial>::default(), Assets::<Image>::default());
+        let parts = cache.get(&w.vfs, "standardmesh", "/DesertCombat/M1A1/M1A1_rack", &mut meshes, &mut materials, &mut images);
+        assert!(!parts.is_empty());
+        for (_, m) in parts {
+            assert!(matches!(materials.get(&m).unwrap().alpha_mode, AlphaMode::Mask(_) | AlphaMode::AlphaToCoverage), "{:?}", materials.get(&m).unwrap().alpha_mode);
+        }
+    }
 
     /// El Alamein's `textureManager.alternativePath Texture/Africa`: the Panzer IV's `texture/P4Main_f` is
     /// the desert one, `texture/Africa/p4main_f`.

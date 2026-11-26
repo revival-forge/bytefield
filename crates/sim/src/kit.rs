@@ -54,7 +54,7 @@ impl Sim<'_> {
     pub fn arm(&mut self, i: usize, kit: &str) -> bool {
         let ws = self.world.kit_weapons(kit);
         let armed = self.vehicles[i].give_kit(ws, None);
-        if let Some(m) = self.vehicles[i].movement.as_mut() {
+        if let Some(m) = self.vehicles[i].soldier_mut() {
             m.kit_parts = self.world.kit_parts(kit);
         }
         armed
@@ -64,7 +64,7 @@ impl Sim<'_> {
         let (pos, rows) = (self.vehicles[i].craft.body.pos, self.vehicles[i].craft.body.rows);
         let Some(crate::create::Made::Item(k)) = self.instantiate(kit, pos, rows) else { return };
         self.items[k].carrier = Some(i);
-        if let Some(m) = self.vehicles[i].movement.as_mut() {
+        if let Some(m) = self.vehicles[i].soldier_mut() {
             m.kit = Some(k);
         }
     }
@@ -75,7 +75,7 @@ impl Sim<'_> {
     pub(crate) fn drop_kit(&mut self, i: usize, keep: bool) {
         let v = &mut self.vehicles[i];
         let (pos, rows) = (v.craft.body.pos, v.craft.body.rows);
-        let Some(m) = v.movement.as_mut() else { return };
+        let Some(m) = v.soldier_mut() else { return };
         // (a copy that follows the server, `Prediction`: it knows the items on the ground, not the carried ones)
         let Some(k) = m.kit.take().filter(|&k| k < self.items.len()) else { return };
         let weapons = if keep { m.weapons_in_kit_order() } else { m.take_weapons() };
@@ -99,7 +99,7 @@ impl Sim<'_> {
     pub(crate) fn pickup_step(&mut self, i: usize) {
         let now = self.clock.time;
         let v = &self.vehicles[i];
-        let Some(m) = v.movement.as_ref().filter(|m| m.has_player && m.driven && !v.removed && v.entry.inside.is_none()) else { return };
+        let Some(m) = v.soldier().filter(|m| m.has_player && m.driven && !v.removed && v.entry.inside.is_none()) else { return };
         if !(m.input.mapped(DROP) && m.input.get(DROP) > crate::entry::PRESSED) {
             return;
         }
@@ -135,7 +135,7 @@ impl Sim<'_> {
         let item = &mut self.items[k];
         item.carrier = Some(i);
         item.expires = None;
-        let m = self.vehicles[i].movement.as_mut().unwrap();
+        let m = self.vehicles[i].soldier_mut().unwrap();
         m.kit = Some(k);
         m.kit_picked_at = (now as f32) as f64;
         m.hold_weapons(weapons);
@@ -173,9 +173,9 @@ mod tests {
         let mut s = crate::Sim::new(&w, 1.0 / 30.0);
         let y = w.height_at(1672.3, 851.7).unwrap() as f32;
         let sol = s.spawn_vehicle("GermanDesertSoldier", [1672.3, y + 1.0, 851.7], [0.0; 3]).unwrap();
-        s.vehicles[sol].movement.as_mut().unwrap().kit = Some(s.items.len() + 50);
+        s.vehicles[sol].soldier_mut().unwrap().kit = Some(s.items.len() + 50);
         s.drop_kit(sol, false);
-        assert_eq!(s.vehicles[sol].movement.as_ref().unwrap().kit, None);
+        assert_eq!(s.vehicles[sol].soldier().unwrap().kit, None);
     }
 
     /// a reference run of the original: a US soldier of DC_Basrahs_Edge with an
@@ -190,15 +190,15 @@ mod tests {
         let (x, z) = (721.85, 719.78);
         let y = w.height_at(x, z).unwrap() as f32;
         let sol = s.spawn_vehicle("USSoldier", [x as f32, y + 1.0, z as f32], [0.0; 3]).unwrap();
-        s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
+        s.vehicles[sol].soldier_mut().unwrap().has_player = true;
         assert!(s.vehicles[sol].give_kit(w.kit_weapons("US_Sniper"), None));
         s.hand_kit(sol, "US_Sniper");
         s.drop_kit(sol, false);
         assert!(s.vehicles[sol].give_kit(w.kit_weapons("Iraq_Assault"), None));
         s.hand_kit(sol, "Iraq_Assault");
         let (sniper, assault) = (s.items.len() - 2, s.items.len() - 1);
-        let names = |s: &crate::Sim| -> Vec<String> { s.vehicles[sol].movement.as_ref().unwrap().weapons_in_kit_order().iter().map(|w| w.template.name.clone()).collect() };
-        let first = |s: &crate::Sim| s.vehicles[sol].movement.as_ref().unwrap().weapons_in_kit_order()[0].mags.clone();
+        let names = |s: &crate::Sim| -> Vec<String> { s.vehicles[sol].soldier().unwrap().weapons_in_kit_order().iter().map(|w| w.template.name.clone()).collect() };
+        let first = |s: &crate::Sim| s.vehicles[sol].soldier().unwrap().weapons_in_kit_order()[0].mags.clone();
         assert_eq!(names(&s), ["AK47", "Browninghipo", "KnifeAxis", "GrenadeAllies", "Binoculars", "AK47GP30"]);
         for f in 0..300 {
             let mut axes = vec![];
@@ -208,7 +208,7 @@ mod tests {
             if [60, 61, 150, 151, 200, 201].contains(&f) {
                 axes.push((super::DROP, 1.0));
             }
-            s.vehicles[sol].movement.as_mut().unwrap().set_input(&axes);
+            s.vehicles[sol].soldier_mut().unwrap().set_input(&axes);
             s.step();
             match f {
                 59 => assert_eq!(first(&s)[..2], [20, 30], "the original's ten rounds"),
@@ -222,7 +222,7 @@ mod tests {
         }
         // dropped at 150, the original destroys it at 1050
         for f in 300..1060 {
-            s.vehicles[sol].movement.as_mut().unwrap().set_input(&[]);
+            s.vehicles[sol].soldier_mut().unwrap().set_input(&[]);
             s.step();
             if f == 1040 {
                 assert!(!s.items[sniper].removed);
@@ -240,7 +240,7 @@ mod tests {
         s.round.playing = true;
         let y = w.height_at(1672.3, 851.7).unwrap() as f32;
         let sol = s.spawn_vehicle("GermanDesertSoldier", [1672.3, y + 1.0, 851.7], [0.0; 3]).unwrap();
-        s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
+        s.vehicles[sol].soldier_mut().unwrap().has_player = true;
         assert!(s.vehicles[sol].give_kit(w.kit_weapons("German_Scout_Desert"), None));
         s.hand_kit(sol, "German_Scout_Desert");
         s.drop_kit(sol, false);
@@ -248,12 +248,12 @@ mod tests {
         s.hand_kit(sol, "German_Assault_Desert");
         let (scout, assault) = (s.items.len() - 2, s.items.len() - 1);
         let names = |s: &crate::Sim| -> (Vec<String>, String) {
-            let m = s.vehicles[sol].movement.as_ref().unwrap();
+            let m = s.vehicles[sol].soldier().unwrap();
             (m.weapons_in_kit_order().iter().map(|w| w.template.name.clone()).collect(), m.weapon.as_ref().unwrap().template.name.clone())
         };
-        let mags = |s: &crate::Sim| s.vehicles[sol].movement.as_ref().unwrap().weapons_in_kit_order()[0].mags.clone();
+        let mags = |s: &crate::Sim| s.vehicles[sol].soldier().unwrap().weapons_in_kit_order()[0].mags.clone();
         let mut frame = |s: &mut crate::Sim, axes: &[(usize, f32)]| {
-            s.vehicles[sol].movement.as_mut().unwrap().set_input(axes);
+            s.vehicles[sol].soldier_mut().unwrap().set_input(axes);
             s.step();
         };
         for f in 0..60 {
@@ -323,7 +323,7 @@ mod tests {
             s.round.playing = true;
             let y = w.height_at(1672.3, 851.7).unwrap() as f32;
             let sol = s.spawn_vehicle("GermanDesertSoldier", [1672.3, y + 1.0, 851.7], [0.0; 3]).unwrap();
-            s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
+            s.vehicles[sol].soldier_mut().unwrap().has_player = true;
             assert!(s.vehicles[sol].give_kit(w.kit_weapons("German_Scout_Desert"), None));
             s.hand_kit(sol, "German_Scout_Desert");
             s.drop_kit(sol, false);
@@ -332,7 +332,7 @@ mod tests {
             let ky = s.items[kit].pos[1];
             assert!((ky - 60.943).abs() < 0.01, "{ky}");
             s.vehicles[sol].craft.body.pos = [1672.3 + along, ky + 1.0, 851.7];
-            s.vehicles[sol].movement.as_mut().unwrap().set_input(&[(super::DROP, 1.0)]);
+            s.vehicles[sol].soldier_mut().unwrap().set_input(&[(super::DROP, 1.0)]);
             s.pickup_step(sol);
             assert_eq!(s.items[kit].carrier.is_some(), taken, "{along} m");
         }

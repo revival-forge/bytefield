@@ -36,6 +36,8 @@ pub struct Draw {
     // TODO: `useAsBone`'s offset (0/-0.15/0 on the T34's wheels) and `setBoneOriginOffset` (0/-0.5/0 on 145 bundles) are not read: where the
     // track bends under each wheel. Compare a tank's lower run from the side with the original.
     pub track: Option<(String, Vec<(String, usize)>)>,
+    /// a skeleton's own animation (`setAnimationState`: a ship's flag, `AnimatedJapFlag` on the Type 38), played on its track's skeleton
+    pub state: Option<String>,
     /// `setAnimatedTextureSpeed` (u/v) when not 0/0: its texture runs with the engine (a track's tread)
     pub tex_speed: Option<[f32; 2]>,
     /// a `Spring` with a geometry: a wheel, which rolls (`play.rs`, `Spin`)
@@ -269,8 +271,9 @@ fn walk(db: &TemplateDb, name: &str, anchor: Option<usize>, local: Mat4, root: b
     {
         let kind = gt.kind.to_ascii_lowercase();
         // `GeometryTemplate.scale`: none in vanilla; DC's T72, M1A1, M2A3, BMP, Pickup…
-        let local = match gt.get("scale").and_then(|a| a.first()?.trim().parse::<f64>().ok()).filter(|s| *s > 0.0 && *s != 1.0) {
-            Some(k) => local.mul(&Mat4([[k, 0.0, 0.0, 0.0], [0.0, k, 0.0, 0.0], [0.0, 0.0, k, 0.0], [0.0, 0.0, 0.0, 1.0]])),
+        // (one number or `x/y/z`, e.g. the SA-3 missile's 0.3/1/1)
+        let local = match gt.get("scale").and_then(|a| a.first()).map(|v| bytefield_sim::parse_scale(v)).filter(|k| *k != [1.0; 3]) {
+            Some([x, y, z]) => local.mul(&Mat4([[x as f64, 0.0, 0.0, 0.0], [0.0, y as f64, 0.0, 0.0], [0.0, 0.0, z as f64, 0.0], [0.0, 0.0, 0.0, 1.0]])),
             None => local,
         };
         let skin = gt.get("setskin").and_then(|a| a.first()).map(|f| f.replace('\\', "/"));
@@ -299,11 +302,12 @@ fn walk(db: &TemplateDb, name: &str, anchor: Option<usize>, local: Mat4, root: b
             .filter(|v| v.len() == 2 && (v[0] != 0.0 || v[1] != 0.0))
             .map(|v| [v[0] as f32, v[1] as f32]);
         let shadow = gt.get("hasdynamicshadow").and_then(|a| a.first()).is_some_and(|v| v.trim() == "1");
-        out.push(Draw { kind, file: file.replace('\\', "/"), part: anchor, local, parachute, skin, soldier, first_person, template: t.name.clone(), instance, track, tex_speed, wheel: t.kind.eq_ignore_ascii_case("spring"), cockpit, compare: None, dummy: false, shadow, wreck: None, fade: false, seat: None });
+        let state = track.as_ref().and(t.get("setanimationstate")).and_then(|a| a.first()).cloned();
+        out.push(Draw { kind, file: file.replace('\\', "/"), part: anchor, local, parachute, skin, soldier, first_person, template: t.name.clone(), instance, track, state, tex_speed, wheel: t.kind.eq_ignore_ascii_case("spring"), cockpit, compare: None, dummy: false, shadow, wreck: None, fade: false, seat: None });
     }
     // (a `PlayerControlObject` too, before its children: [`seats`] counts them)
     if t.kind.eq_ignore_ascii_case("seatobject") || t.kind.eq_ignore_ascii_case("playercontrolobject") {
-        out.push(Draw { kind: t.kind.clone(), file: String::new(), part: anchor, local, parachute, skin: None, soldier: false, first_person, template: t.name.clone(), instance, track: None, tex_speed: None, wheel: false, cockpit, compare: None, dummy: false, shadow: false, wreck: None, fade: false, seat: Some(owner) });
+        out.push(Draw { kind: t.kind.clone(), file: String::new(), part: anchor, local, parachute, skin: None, soldier: false, first_person, template: t.name.clone(), instance, track: None, state: None, tex_speed: None, wheel: false, cockpit, compare: None, dummy: false, shadow: false, wreck: None, fade: false, seat: Some(owner) });
     }
     // The weapon's dummy projectiles: one at each `addFireArmsPosition` (none: at the
     // weapon), walked apart (no part of the craft, no instance counted). Only the position: an identity matrix
@@ -443,6 +447,17 @@ mod tests {
 
     /// A seat shows its soldier by its flags and in its animations, its own or the soldier's: the jeep's two, the Panzer IV's
     /// machine gunner and not its closed crew.
+    /// A ship's flag is a track with no wheels and a state of its own: it waves (`FlagBlow`), not in its bind pose, where it did not show.
+    #[test]
+    fn a_ships_flag_plays_its_state() {
+        let game = bytefield_testdata::require!(Base);
+        let w = bytefield_sim::World::load(&game, "bf1942", "Midway", "conquest").unwrap();
+        let v = w.vehicle("Fletcher").unwrap();
+        let d = super::draws(&w.db, "Fletcher", &v.craft.parts);
+        let flags: Vec<_> = d.iter().filter(|d| d.state.is_some()).collect();
+        assert!(!flags.is_empty() && flags.iter().all(|d| d.state.as_deref() == Some("FlagBlow") && d.track.as_ref().is_some_and(|t| t.1.is_empty())), "{flags:?}");
+    }
+
     #[test]
     fn the_seats_that_show_their_soldier() {
         let game = bytefield_testdata::require!(Base);
@@ -494,7 +509,7 @@ mod tests {
         assert_eq!((a.instance, b.instance), (0, 1));
         assert_ne!(v.entry.seats[found[0]].ride, v.entry.seats[found[1]].ride);
         let s = w.soldier("USSoldier").unwrap();
-        let m = s.movement.as_ref().unwrap();
+        let m = s.soldier().unwrap();
         let sk = m.posed_skeleton_seated("Lb_SitInVehicle", "Ub_SitInVehicle", true, 0.0).unwrap();
         let bone = |n: &str| sk.bone_pos(sk.file.index(n).unwrap());
         assert_eq!(bone("Bip01 L Foot"), bone("Bip01 Pelvis"));
@@ -569,7 +584,7 @@ mod tests {
                     problems.entry("level without a soldier".into()).or_default().push(level.clone());
                     continue;
                 };
-                let move_ = sold.movement.as_ref().unwrap();
+                let move_ = sold.soldier().unwrap();
                 let skeletons: BTreeSet<String> = soldiers.iter().filter_map(|t| t.get("createskeleton")?.first().map(|f| f.to_ascii_lowercase())).collect();
                 if skeletons.len() > 1 {
                     problems.entry("several_skeletons".into()).or_default().push(format!("{level} {skeletons:?}"));

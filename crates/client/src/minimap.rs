@@ -250,7 +250,7 @@ pub(crate) fn team_marks(g: &Game, team: u32, pics: &mut impl FnMut(&str) -> Opt
         }
     }
     let spawned = |t: &str| sim.world.level.spawners.iter().flat_map(|s| &s.templates).find(|(_, n)| n.eq_ignore_ascii_case(t)).map(|(team, _)| *team);
-    for (_, v) in sim.vehicles.iter().enumerate().filter(|&(k, v)| !v.removed && v.in_world() && !v.is_soldier() && riders.get(&k).copied().or_else(|| spawned(&v.template)) == Some(team)) {
+    for (_, v) in sim.vehicles.iter().enumerate().filter(|&(k, v)| !v.removed && v.in_world() && !v.has_soldier_contact() && riders.get(&k).copied().or_else(|| spawned(&v.template)) == Some(team)) {
         let Some(icon) = last_arg(g, &v.template, "setMinimapIcon") else { continue };
         let size = last_arg(g, &v.template, "setMinimapIconSize").and_then(|s| s.parse::<f32>().ok()).unwrap_or(16.0);
         list.push(Mark { image: pics(&icon), x: v.craft.body.pos[0], z: v.craft.body.pos[2], side: size, tint: team_color(team), turn: heading(v.craft.body.rows[2]) });
@@ -396,7 +396,7 @@ fn update(
     if let Some(v) = mine.filter(|_| me.alive) {
         // its own icon in its team's colour inside the ring (the ring alone, grey, is lost on a
         // dark picture): on foot the soldier's, driving its vehicle's
-        let (icon, size) = if v.is_soldier() {
+        let (icon, size) = if v.has_soldier_contact() {
             (soldier_icon.clone(), 20.0)
         } else {
             let size = last_arg(&g, &v.template, "setMinimapIconSize").and_then(|s| s.parse::<f32>().ok()).unwrap_or(16.0);

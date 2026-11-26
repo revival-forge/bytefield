@@ -1,6 +1,6 @@
-//! One round with `bots2` on both sides, or a new [`Mind`] on team 1, and what it looks like from outside (`bytefield_sim::dumb`):
-//!   arena <game> <mod> <level> <players> <minutes> [--mode conquest] [--out out.json] [--mind bots3|bots2|none] [--both] [--mind-team 1|2] [--seed N]
-//! Without `--mind`, bots3 plays both teams; `--mind bots2` is the old default. `--both` gives the mind to team 2 as well. Prints who won, tickets, flags and kills. Register a new mind in `mind_of` below.
+//! One round with the bots on both sides, or a new [`Mind`] on team 1, and what it looks like from outside (`bytefield_sim::dumb`):
+//!   arena <game> <mod> <level> <players> <minutes> [--mode conquest] [--out out.json] [--mind bots|none] [--both] [--mind-team 1|2] [--seed N]
+//! Without `--mind`, the bots play both teams; with one, the sim's plain bot plays the other. `--both` gives the mind to team 2 as well. Prints who won, tickets, flags and kills. Register a new mind in `mind_of` below.
 use bytefield_sim::bot_api::MindMaker;
 use bytefield_sim::dumb::Watcher;
 use std::path::Path;
@@ -8,10 +8,8 @@ use std::path::Path;
 fn mind_of(name: &str, level: &str, seed: u64) -> Option<MindMaker> {
     match name {
         // (new minds go here)
-        "bots2" => Some(bytefield_sim::bots2::maker(level, seed)),
-        "bots3" => Some(bytefield_sim::bots3::maker(level, seed)),
-        // variants to measure what each piece brings: bots3:no-squad, bots3:no-assign+no-spawn...
-        v if v.starts_with("bots3:") => Some(bytefield_sim::bots3::maker_variant(level, seed, &v["bots3:".len()..].split('+').collect::<Vec<_>>())),
+        // variants to measure what each piece brings: bots:no-squad, bots:no-assign+no-spawn...
+        n if bytefield_sim::bots::is_name(n) => Some(bytefield_sim::bots::mind(n, level, seed)),
         "none" => None,
         other => panic!("no mind called {other}"),
     }
@@ -20,7 +18,7 @@ fn mind_of(name: &str, level: &str, seed: u64) -> Option<MindMaker> {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 6 {
-        eprintln!("arena <game> <mod> <level> <players> <minutes> [--mode conquest] [--out out.json] [--mind bots3|bots2|none] [--both] [--mind-team 1|2] [--seed N]");
+        eprintln!("arena <game> <mod> <level> <players> <minutes> [--mode conquest] [--out out.json] [--mind bots|none] [--both] [--mind-team 1|2] [--seed N]");
         std::process::exit(2);
     }
     let opt = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).map(|s| s.as_str());
@@ -30,8 +28,8 @@ fn main() {
     let mut s = bytefield_sim::Sim::new(&w, 1.0 / 30.0);
     s.round.playing = true;
     s.start_conquest();
-    // bots3 plays both teams unless `--mind` is given: then the sim's own bots2 play the team that has no mind (as before)
-    bytefield_sim::bots3::use_by_default(opt("--mind").is_none());
+    // the bots play both teams unless `--mind` is given: then the sim's plain bot (`bots::life`) plays the team that has no mind
+    bytefield_sim::bots::use_by_default(opt("--mind").is_none());
     s.enable_bots();
     let seed: u64 = opt("--seed").map_or(0, |n| n.parse().unwrap());
     if seed != 0 {
@@ -70,7 +68,7 @@ fn main() {
         kills[p.team.min(2) as usize] += p.kills;
         deaths[p.team.min(2) as usize] += p.deaths;
     }
-    let summary = serde_json::json!({"level": a[3], "mode": mode, "players": players, "seconds": s.clock.steps as f64 / 30.0, "flags": flags, "kills": kills, "deaths": deaths, "round_end": s.round.round_end, "tickets": s.modes.conquest.as_ref().map(|c| c.tickets), "winner": s.modes.conquest.as_ref().and_then(|c| c.winner)});
+    let summary = serde_json::json!({"bots_version": bytefield_sim::bots::VERSION, "level": a[3], "mode": mode, "players": players, "seconds": s.clock.steps as f64 / 30.0, "flags": flags, "kills": kills, "deaths": deaths, "round_end": s.round.round_end, "tickets": s.modes.conquest.as_ref().map(|c| c.tickets), "winner": s.modes.conquest.as_ref().and_then(|c| c.winner)});
     println!("{summary}");
     if let Some(out) = opt("--out") {
         std::fs::write(out, serde_json::to_string_pretty(&watcher.finish(summary)).unwrap()).unwrap();

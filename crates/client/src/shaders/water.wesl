@@ -9,12 +9,14 @@ import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::main_pass_post_lighting_processing,
-    mesh_view_bindings::{view, fog, lights},
+    mesh_view_bindings::{view, fog, lights, globals},
     mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
     shadows::fetch_directional_shadow,
 };
 import bevy_pbr::render::{clustered_forward as clustering, mesh_view_bindings::clustered_lights, pbr_lighting::getDistanceAttenuation};
 import bevy_render::maths::PI;
+import bytefield::shaders::aerial::aerial;
+import bytefield::shaders::clouds::cloud_at;
 
 // (with the setting `oit`: into the camera's list per pixel, sorted and blended after the
 // transparent pass, as Bevy's `pbr.wesl` does; the pipeline then has no blending and draws nothing)
@@ -214,19 +216,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let n = gamma(textureSample(normal_map, normal_sampler, xz * water.normal.z + water.normal.xy * t).rgb) * 2.0 - 1.0;
     let lit = clamp(dot(n, normalize(normalize(vec3(-r.x, r.y, r.z)) + water.sun.xyz)), 0.0, 1.0);
     var spec = lit * water.specular.rgb * water.specular.w;
-    // the enhanced profile's sun shadows, like on the terrain; no highlight there
-    // TODO: in shallow water the shadow is on the bottom (the terrain) and again here: where it falls in the water it comes
-    // out as a light grey-violet band. Look at it with
-    // `GRAPHICS=enhanced` on Iwo_Jima; perhaps only darken where the water is deep.
+    // the enhanced profile's sun shadows, like on the terrain; no highlight there. The water's own colour darkens with the
+    // depth (`k`): in the shallows the shadow is on the bottom (the terrain), and a second one on the surface, apart from it
+    // with the sun's slant, came out as a grey-violet band (Iwo_Jima's camera)
     if (any(water.shade.xyz < vec3(1.0)) && lights.n_directional_lights > 0u) {
-        let s = sun_shadow(in.world_position, vec3(0.0, 1.0, 0.0), in.position.xy);
-        rgb0 = rgb0 * mix(water.shade.xyz, vec3(1.0), s);
+        let s = sun_shadow(in.world_position, vec3(0.0, 1.0, 0.0), in.position.xy) * (1.0 - water.shade.w * cloud_at(in.world_position.xyz));
+        rgb0 = rgb0 * mix(vec3(1.0), mix(water.shade.xyz, vec3(1.0), s), k);
         spec = spec * s;
     }
     let e = flash_light(in.world_position, vec3(0.0, 1.0, 0.0), in.position.xy);
     if any(e > vec3(0.0)) {
         rgb0 = gamma(from_screen(rgb0) * (1.0 + e));
     }
+    // (the air's haze, before the fog: `aerial.wesl`)
+    rgb0 = gamma(aerial(from_screen(rgb0), in.world_position.xyz));
     let alpha = a.a * b.a * in.uv.y;
     // each pass fogged to half the level's fog (FOGCOLOR #5a5e64 in Wake's #b5bcc9): added, the fog in full
     let f = gamma_fog(in.world_position.xyz);

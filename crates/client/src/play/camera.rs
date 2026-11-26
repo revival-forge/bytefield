@@ -71,7 +71,7 @@ pub(super) fn vehicle_fov(g: &Game) -> Option<f32> {
 pub fn zoom(g: &Game) -> Option<Zoom> {
     let p = &g.session.sim.players[g.player];
     let s = &g.session.sim.vehicles[p.soldier.filter(|_| p.alive)?];
-    let w = s.movement.as_ref()?.weapon.as_ref().filter(|w| w.zoomed() && s.entry.inside.is_none())?;
+    let w = s.soldier()?.weapon.as_ref().filter(|w| w.zoomed() && s.entry.inside.is_none())?;
     let t = g.session.sim.world.db.object_template(&w.template.name)?;
     let num = |k: &str| t.get(k).and_then(|a| a.first()).and_then(|a| a.trim().parse::<f32>().ok());
     let arms = num("soldierzoomfov").filter(|&k| k > 0.0).unwrap_or(1.0);
@@ -156,9 +156,19 @@ pub(super) fn camera(
     mut q: Query<(&mut Transform, &mut Projection), (With<PlayCamera>, Without<FirstPerson>, Without<ArmsCamera>)>,
     mut arms: Query<(&mut Projection, &mut RenderLayers, &ArmsCamera), Without<PlayCamera>>,
     mut near: Query<(&mut Transform, &FirstPerson), Without<PlayCamera>>,
+    time: Res<Time>,
+    mut smooth: Local<Option<Quat>>,
 ) {
     let Ok((mut t, mut proj)) = q.single_mut() else { return };
     camera_place(&g, &mut t);
+    // the AI playing the player (`BYTEFIELD_PLAYER_BOT`, to film): a bot turns its head at once, a person's
+    // camera does not; the view follows it eased, so a snap becomes a sweep
+    if g.session.sim.players[g.player].ai {
+        let k = 1.0 - (-time.delta_secs() * 5.0).exp();
+        let r = smooth.map_or(t.rotation, |r| r.slerp(t.rotation, k));
+        *smooth = Some(r);
+        t.rotation = r;
+    }
     let z = zoom(&g);
     let p = &g.session.sim.players[g.player];
     let eased = p.soldier.filter(|_| p.alive).map(|i| {
@@ -203,7 +213,7 @@ pub(super) fn scope(mut commands: Commands, g: Res<Game>, mut images: ResMut<Ass
     if !*made && z.as_ref().is_some_and(|z| z.scope) {
         *made = true;
         let p = &g.session.sim.players[g.player];
-        let icon = p.soldier.and_then(|i| g.session.sim.vehicles[i].movement.as_ref()?.weapon.as_ref().map(|w| w.template.name.clone()));
+        let icon = p.soldier.and_then(|i| g.session.sim.vehicles[i].soldier()?.weapon.as_ref().map(|w| w.template.name.clone()));
         let file = icon.and_then(|w| g.session.sim.world.db.object_template(&w)?.get("setscopeicon")?.first().map(|f| f.trim_matches('"').to_string())).unwrap_or_else(|| "sniper.tga".into());
         let stem = file.rsplit_once('.').map_or(file.as_str(), |s| s.0);
         let Some(handle) = cache.texture(&g.session.sim.world.vfs, &format!("menu/Texture/{stem}"), &mut images) else {

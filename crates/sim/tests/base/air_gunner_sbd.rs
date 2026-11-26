@@ -1,4 +1,4 @@
-//! A bots3 mind in the rear seat of a dive bomber against an enemy fighter flying behind it. Skipped without the real data.
+//! A bots mind in the rear seat of a dive bomber against an enemy fighter flying behind it. Skipped without the real data.
 use bytefield_sim::soldier::axis;
 
 type V3 = [f32; 3];
@@ -21,10 +21,10 @@ fn level_stick(rows: [V3; 3], before: &mut [V3; 3], vel: V3, y: f32, target_y: f
     vec![(axis::THROTTLE, (0.6 + 0.05 * (speed - now)).clamp(0.0, 1.0)), (1, -pitch.clamp(-1.0, 1.0)), (2, bank.clamp(-1.0, 1.0))]
 }
 
-/// The SBD's rear gun (seat 1) turns 60 degrees either side and 40 up but only 1 degree down: a bots3 gunner in it hits a Zero 150 m
+/// The SBD's rear gun (seat 1) turns 60 degrees either side and 40 up but only 1 degree down: a bots gunner in it hits a Zero 150 m
 /// behind and 20 m above it. (A Zero level with the SBD or below is outside the arc and is never hit.)
 #[test]
-fn a_bots3_gunner_in_the_sbds_rear_seat_hits_a_zero_above_and_behind_it() {
+fn a_bots_gunner_in_the_sbds_rear_seat_hits_a_zero_above_and_behind_it() {
     let game = bytefield_testdata::require!(Base);
     let w = bytefield_sim::World::load(&game, "bf1942", "Midway", "conquest").unwrap();
     let mut seeds_with_hits = 0;
@@ -32,7 +32,7 @@ fn a_bots3_gunner_in_the_sbds_rear_seat_hits_a_zero_above_and_behind_it() {
         let mut s = bytefield_sim::Sim::new(&w, 1.0 / 30.0);
         s.round.playing = true;
         s.start_conquest();
-        s.set_minds(1, bytefield_sim::bots3::maker(&w.level.name, seed));
+        s.set_minds(1, bytefield_sim::bots::maker(&w.level.name, seed));
         let (kp, kb, kg) = (s.join(1, true), s.join(2, true), s.join(1, true));
         let alive = |s: &bytefield_sim::Sim, k: usize| s.players[k].soldier.filter(|_| s.players[k].alive);
         let mut soldiers = None;
@@ -65,7 +65,7 @@ fn a_bots3_gunner_in_the_sbds_rear_seat_hits_a_zero_above_and_behind_it() {
             for (c, soldier, before) in [(ca, sp, &mut before_a), (cb, sb, &mut before_b)] {
                 let b = &s.vehicles[c].craft.body;
                 let axes = level_stick(b.rows, before, b.vel, b.pos[1], if c == cb { y + 20.0 } else { y }, 80.0);
-                s.vehicles[soldier].movement.as_mut().unwrap().set_input(&axes);
+                s.vehicles[soldier].soldier_mut().unwrap().set_input(&axes);
             }
             s.step();
             for f in s.journal.fired.get(seen..).unwrap_or(&[]) {

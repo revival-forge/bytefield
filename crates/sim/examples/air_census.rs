@@ -43,7 +43,7 @@ fn flies(w: &bytefield_sim::World, template: &str) -> bool {
         let want = ((900.0 - height) * 0.4).clamp(-12.0, 30.0);
         let p = (k * (0.05 * (want - pitch) - 0.02 * pitch_rate)).clamp(-1.0, 1.0);
         let roll = (k * (0.02 * (0.0 - bank) - 0.006 * roll_rate)).clamp(-1.0, 1.0);
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::THROTTLE, 1.0), (1, -p), (2, roll)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::THROTTLE, 1.0), (1, -p), (2, roll)]);
         s.step();
         let now = s.vehicles[craft].craft.body.rows;
         let rate = |x: f32| x.clamp(-1.0, 1.0).asin().to_degrees() / dt;
@@ -85,7 +85,7 @@ fn main() {
         };
         // (team, template) -> (class, count, seats, weapons line, armed pilot)
         let mut seen: BTreeMap<(u32, String), (VehicleClass, usize, usize, String, bool)> = BTreeMap::new();
-        for v in s.vehicles.iter().filter(|v| v.in_world() && !v.is_soldier() && !v.entry.seats.is_empty()) {
+        for v in s.vehicles.iter().filter(|v| v.in_world() && !v.has_soldier_contact() && !v.entry.seats.is_empty()) {
             let class = VehicleClass::of(v);
             if !class.flies() {
                 continue;

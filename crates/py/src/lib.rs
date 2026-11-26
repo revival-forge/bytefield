@@ -870,7 +870,7 @@ impl Vehicle {
     /// Whether it is a soldier.
     #[getter]
     fn is_soldier(&self, py: Python) -> bool {
-        self.get(py, |v| v.is_soldier())
+        self.get(py, |v| v.has_soldier_contact())
     }
 
     /// A soldier's input as the velocity it asks for (world, m/s), kept until changed: the
@@ -893,7 +893,7 @@ impl Vehicle {
         let mut a: Vec<(usize, f32)> = axes.into_iter().collect();
         a.sort_by_key(|x| x.0);
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.set_input(&a);
             }
         });
@@ -903,7 +903,7 @@ impl Vehicle {
     /// (its `factors` are strafe, forward).
     fn set_factors(&self, py: Python, forward: i32, strafe: i32) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.factor = [forward, strafe];
             }
         });
@@ -913,7 +913,7 @@ impl Vehicle {
     /// `soldier_frame` dts); from the first call on, no other frame updates run.
     fn anim_frames(&self, py: Python, dts: Vec<f32>) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.frames.get_or_insert_with(Vec::new).extend(dts);
             }
         });
@@ -923,7 +923,7 @@ impl Vehicle {
     /// factors (forward, strafe), the head's yaw, the pose; None for a vehicle.
     fn soldier<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         let v = self.get(py, |s| {
-            s.movement.as_ref().map(|m| {
+            s.soldier().map(|m| {
                 let name = |h: &bytefield_sim::anim::Instance| h.state.map(|i| m.machine.states[i].name.clone());
                 serde_json::json!({"state": name(&m.lower), "time": m.lower.time, "morph": m.lower.morph,
                     "upper": name(&m.upper), "upper_time": m.upper.time, "upper_morph": m.upper.morph, "item": m.item,
@@ -940,7 +940,7 @@ impl Vehicle {
     /// material) and the countdown to the next sample; None for a vehicle.
     fn skeleton<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         let v = self.get(py, |s| {
-            s.movement.as_ref().and_then(|m| {
+            s.soldier().and_then(|m| {
                 m.skeleton.as_ref().map(|k| {
                     let names: Vec<&str> = k.file.bones.iter().map(|b| b.name.as_str()).collect();
                     serde_json::json!({"abs": k.abs, "names": names, "collision": k.collision, "sample_in": m.sample_in})
@@ -955,7 +955,7 @@ impl Vehicle {
     fn skeleton_segment<'py>(&self, py: Python<'py>, start: F3, dir: F3) -> PyResult<Option<Bound<'py, PyAny>>> {
         let h = self.get(py, |s| {
             let b = &s.craft.body;
-            s.movement.as_ref().and_then(|m| m.skeleton.as_ref()).and_then(|k| k.segment(&b.rows, b.pos, a3(start), a3(dir)))
+            s.soldier().and_then(|m| m.skeleton.as_ref()).and_then(|k| k.segment(&b.rows, b.pos, a3(start), a3(dir)))
         });
         h.map(|h| to_py(py, &h)).transpose()
     }
@@ -981,7 +981,7 @@ impl Vehicle {
     ) -> PyResult<()> {
         let mut missing = None;
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 let machine = m.machine.clone();
                 let mut put = |h: &mut bytefield_sim::anim::Instance, name: Option<&str>, time: f32, morph: f32| {
                     if let Some(name) = name {
@@ -1026,7 +1026,7 @@ impl Vehicle {
     fn set_animation(&self, py: Python, state: &str, time: f32, morph: f32, upper: Option<(String, f32, f32)>) -> PyResult<()> {
         let mut missing = None;
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 let machine = m.machine.clone();
                 let mut put = |h: &mut bytefield_sim::anim::Instance, name: &str, time: f32, morph: f32| match machine.find(name) {
                     Some(i) => {
@@ -1054,7 +1054,7 @@ impl Vehicle {
     #[pyo3(signature = (half, timer = None, pick = None))]
     fn set_idle(&self, py: Python, half: usize, timer: Option<f32>, pick: Option<&str>) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 let p = pick.and_then(|n| m.machine.find(n));
                 let h = if half == 0 { &mut m.lower } else { &mut m.upper };
                 if let Some(t) = timer {
@@ -1071,7 +1071,7 @@ impl Vehicle {
     /// after it: `Ub_StandAimDP`...): `enableItem`, which raises it.
     fn set_item(&self, py: Python, name: &str) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.enable_item(name);
             }
         });
@@ -1086,7 +1086,7 @@ impl Vehicle {
             world.inner.weapon(name).ok_or_else(|| PyKeyError::new_err(name.to_string()))?
         };
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.enable_item(name);
                 m.weapon = Some(bytefield_sim::firearms::FireArms::new(std::sync::Arc::new(w)));
             }
@@ -1116,7 +1116,7 @@ impl Vehicle {
     /// recoil and camera; None without one.
     fn weapon<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyAny>>> {
         let v = self.get(py, |s| {
-            s.movement.as_ref().and_then(|m| {
+            s.soldier().and_then(|m| {
                 m.weapon.as_ref().map(|w| {
                     let mut v = serde_json::to_value(w).unwrap();
                     v["recoil"] = serde_json::json!(m.recoil);
@@ -1135,7 +1135,7 @@ impl Vehicle {
     /// (`getCurrentInputIndex`; a reference run's `input_index`).
     fn set_input_index(&self, py: Python, index: i32) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.input_index = index;
             }
         });
@@ -1146,7 +1146,7 @@ impl Vehicle {
     /// console-made one (the default: what most reference runs follow).
     fn set_player(&self, py: Python, player: bool) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.has_player = player;
             }
         });
@@ -1162,7 +1162,7 @@ impl Vehicle {
     /// so (the clip's eject)
     fn set_human(&self, py: Python, human: bool) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.human = human;
             }
         });
@@ -1204,7 +1204,7 @@ impl Vehicle {
     /// comes from its own `rand`), its skeleton left as it is.
     fn set_sample_in(&self, py: Python, t: f32) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.sample_in = t;
             }
         });
@@ -1213,7 +1213,7 @@ impl Vehicle {
     /// The soldier's camera child's position off it (it moves halfway to the pose's each update).
     fn set_camera(&self, py: Python, pos: F3) {
         self.get_mut(py, |s| {
-            if let Some(m) = s.movement.as_mut() {
+            if let Some(m) = s.soldier_mut() {
                 m.camera = a3(pos);
             }
         });

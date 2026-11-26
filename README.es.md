@@ -42,13 +42,14 @@ Luego, sobre esa base, lo que el motor de 2002 no podía:
   copia del juego.
 - **Perfiles gráficos:** *Original* (el aspecto del juego) y *Mejorado*, más ajustes sueltos y una página *Experimental*.
 
-## Limitaciones conocidas (0.1)
+## Limitaciones conocidas (0.2)
 
-Es la primera versión pública. Habrá diferencias con el original: cada una es un fallo, y avisar de ellas es lo que más ayuda.
+Habrá diferencias con el original: cada una es un fallo, y avisar de ellas es lo que más ayuda.
 
 - **El juego en red** se ha probado con varios clientes en una misma máquina; entre máquinas distintas es nuevo.
 - **Galactic Conquest** carga y se juega, pero lo han jugado personas mucho menos que Desert Combat.
-- **Los bots** juegan todos los modos, pero aún no bien: en algunos mapas se atascan o no salen de su base.
+- **Los bots** juegan todos los modos y andan sobre una malla de navegación, pero aún se atascan en algunos sitios y algunos no vuelan bien.
+- En gráficas integradas, el perfil *Mejorado* puede ir lento en mapas grandes; *Original* es más ligero.
 - **El sonido** está incompleto en algunos sitios, y en algunos mods pueden faltar sonidos o sonar bajos.
 - Todavía no hay lanzador: el contenido se activa en el menú o con `bytefield-content`.
 

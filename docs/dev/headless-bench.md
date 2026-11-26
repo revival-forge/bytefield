@@ -45,11 +45,11 @@ weapons and following projectiles.
 The examples in `crates/sim/examples` are small tools over the bench (`cargo build --release -p bytefield-sim --examples`,
 then `target/release/examples/<name>`):
 
-- `arena <game> <mod> <level> <players> <minutes> [--mind bots3|bots2] [--seed N]`: one round of bots, with who won,
+- `arena <game> <mod> <level> <players> <minutes> [--mind bots|none] [--seed N]`: one round of bots, with who won,
   tickets, flags and kills.
-- `tournament3 <game> --a bots3 --b bots2 --maps bf1942:Berlin,… --seeds 4 --minutes 8 --players 32 --out <dir>`: many
+- `tournament3 <game> --a bots --b bots --maps bf1942:Berlin,… --seeds 4 --minutes 8 --players 32 --out <dir>`: many
   rounds with the sides swapped, one JSON per round with the quality meter's cards; `python3 -I
-  python/tools/bots3_table.py <dir>` makes the table.
+  python/tools/bots_table.py <dir>` makes the table.
 - `drive_all`, `fire_all`, `fire_kits`: every vehicle of a level driven, every weapon fired, every kit's weapons, with
   what moved, hit and broke.
 

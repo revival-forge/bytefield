@@ -18,7 +18,7 @@ use std::sync::Arc;
 use serde::Serialize;
 
 use crate::contact::{self, Ground, Materials};
-use crate::mover::Vehicle;
+use crate::mover::{Body, Vehicle};
 use crate::obstacle::{self, Obstacle, Obstacles};
 use crate::rigid::RigidBody;
 use crate::{Sim, World};
@@ -319,10 +319,10 @@ pub struct Projectile {
     pub end: Option<End>,
     pub impacts: Vec<Impact>,
     /// rigid projectiles: their body and the parts that touch things
-    pub rigid: Option<Box<Vehicle>>,
+    pub rigid: Option<Box<Body>>,
     /// a point projectile with an engine: its parts, whose pushes go to the point node (the body's own integration is not
     /// used; the physics engine's physics update adds to the root's accumulator, here the point node's)
-    pub parts: Option<Box<Vehicle>>,
+    pub parts: Option<Box<Body>>,
     /// where it was fired: the damage falls off with the distance from here
     pub start: V3,
     /// the vehicle of the player that fired it (its id): never hit (a soldier's shots)
@@ -428,10 +428,12 @@ impl Projectile {
                 take(d2, Impact { step: 0, point: h.point, normal: h.normal, material: h.material, object: Some(o.name.clone()), vehicle: None, water: false, vel: self.vel, ended: false, bone: None }, &mut best);
             }
         }
-        // the movers: every part with faces, the segment relative to the root's speed
-        for (vi, v) in vehicles.iter().enumerate().filter(|(i, v)| v.in_world() && self.owner != Some(*i)) {
+        // the movers: every part with faces, the segment relative to the root's speed; and a soldier on a seat that shows him,
+        // with his vehicle's (his own stays as it was when he got in)
+        for (vi, v) in vehicles.iter().enumerate().filter(|(i, v)| (v.in_world() || exposed_seated(vehicles, v, self.owner)) && self.owner != Some(*i)) {
             let body = &v.craft.body;
-            let rel = sub(self.vel, body.vel);
+            let body_vel = v.entry.inside.and_then(|k| vehicles.get(k)).map_or(body.vel, |c| c.craft.body.vel);
+            let rel = sub(self.vel, body_vel);
             let dir = [rel[0] * dt, rel[1] * dt, rel[2] * dt];
             let start = sub(pos, dir);
             if !segment_near_sphere(start, dir, body.pos, v.radius + 1.0) {
@@ -439,7 +441,7 @@ impl Projectile {
             }
             for (h, soldier) in mover_segment(v, start, dir) {
                 let d2 = len2(sub(h.point, pos));
-                let vo = if soldier { body.vel } else { body.velocity_at(h.point) };
+                let vo = if soldier { body_vel } else { body.velocity_at(h.point) };
                 take(d2, Impact { step: 0, point: h.point, normal: h.normal, material: h.material, object: Some(v.template.clone()), vehicle: Some(vi), water: false, vel: sub(self.vel, vo), ended: false, bone: h.bone }, &mut best);
             }
         }
@@ -549,7 +551,7 @@ impl Projectile {
 /// collision skeleton, its one hit), else every part's faces that it crosses.
 pub(crate) fn mover_segment(v: &Vehicle, start: V3, dir: V3) -> Vec<(MoverHit, bool)> {
     let body = &v.craft.body;
-    if let Some(sk) = v.movement.as_ref().and_then(|m| m.skeleton.as_ref()) {
+    if let Some(sk) = v.soldier().and_then(|m| m.skeleton.as_ref()) {
         return sk.segment(&body.rows, body.pos, start, dir).map(|h| (MoverHit { point: h.point, normal: h.normal, material: h.material, bone: Some(h.bone) }, true)).into_iter().collect();
     }
     v.contacts
@@ -563,6 +565,11 @@ pub(crate) fn mover_segment(v: &Vehicle, start: V3, dir: V3) -> Vec<(MoverHit, b
         .collect()
 }
 
+
+/// A soldier on a seat that shows him ([`crate::entry::SeatShow`], level 3), not in the vehicle that fired: a round can hit him.
+fn exposed_seated(vehicles: &[Vehicle], v: &Vehicle, owner: Option<usize>) -> bool {
+    !v.removed && v.entry.inside.is_some_and(|k| owner != Some(k) && vehicles.get(k).and_then(|c| c.entry.seats.get(v.entry.position)).is_some_and(|s| s.show.is_some()))
+}
 
 pub(crate) struct MoverHit {
     pub point: V3,
@@ -763,7 +770,7 @@ fn turn(rows: &mut [V3; 3], axis: V3, degrees: f32) {
 /// its parts against the obstacles, the movers (`checkObjectVsObjects`: a grenade's vertices
 /// against a tank's faces) and the terrain, then `solveImpulse` with the projectile's turn and
 /// `addFriction`. Returns the hits (the objects told: `handleCollision`).
-pub fn collide_rigid(v: &mut Vehicle, ground: &dyn Ground, obstacles: Obstacles<'_>, movers: &mut [Vehicle], skip: &[usize], materials: &Materials, gravity: f32, dt: f32) -> Vec<(contact::Impulse, Option<usize>)> {
+pub fn collide_rigid(v: &mut Body, ground: &dyn Ground, obstacles: Obstacles<'_>, movers: &mut [Vehicle], skip: &[usize], materials: &Materials, gravity: f32, dt: f32) -> Vec<(contact::Impulse, Option<usize>)> {
     if v.craft.body.is_sleeping() {
         return Vec::new();
     }
@@ -962,7 +969,7 @@ impl World {
             v.contacts.retain(|c| !carried.iter().any(|o| o.name.eq_ignore_ascii_case(&c.name)));
             // a fired rocket's engine runs
             v.set_engines_on(true);
-            p.rigid = Some(Box::new(v));
+            p.rigid = Some(Box::new(v.body));
         } else if t.point_physics
             && t.engine
             && let Some(mut v) = self.vehicle(template)
@@ -971,7 +978,7 @@ impl World {
             v.id = PROJECTILE_ID;
             v.contacts.clear();
             v.set_engines_on(true);
-            p.parts = Some(Box::new(v));
+            p.parts = Some(Box::new(v.body));
         }
         Some(p)
     }

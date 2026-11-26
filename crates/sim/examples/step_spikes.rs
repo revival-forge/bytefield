@@ -21,7 +21,7 @@ fn main() {
             let c = (*m).clone();
             let b = t.elapsed().as_secs_f64() * 1e3;
             let t = Instant::now();
-            let r = bytefield_sim::bots2::paths::Grid::from_map(&c);
+            let r = bytefield_sim::bots::body::paths::Grid::from_map(&c, true);
             let d = t.elapsed().as_secs_f64() * 1e3;
             println!("{}x{}: nav_map {a:.1} ms, copy {b:.1} ms, Grid {d:.1} ms ({} cells)", m.width, m.height, r.n * r.n);
         }
@@ -29,9 +29,9 @@ fn main() {
     let mut s = bytefield_sim::Sim::new(&w, 1.0 / 30.0);
     s.round.playing = true;
     s.start_conquest();
-    // bots3 unless `--mind bots2`
-    if a.iter().position(|x| x == "--mind").and_then(|i| a.get(i + 1)).is_none_or(|m| m.starts_with("bots3")) {
-        bytefield_sim::bots3::use_by_default(true);
+    // the bots unless `--mind` names another
+    if a.iter().position(|x| x == "--mind").and_then(|i| a.get(i + 1)).is_none_or(|m| bytefield_sim::bots::is_name(m)) {
+        bytefield_sim::bots::use_by_default(true);
     }
     let t = Instant::now();
     s.enable_bots();

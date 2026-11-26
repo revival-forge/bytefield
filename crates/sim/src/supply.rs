@@ -381,7 +381,7 @@ impl crate::Sim<'_> {
         let mut out = SupplyIcons::default();
         let p = &self.players[player];
         let Some(s) = p.soldier.filter(|_| p.alive).map(|i| &self.vehicles[i]) else { return out };
-        let kit = |d: &Depot| s.movement.as_ref().is_some_and(|m| m.weapon.iter().chain(m.stowed.iter()).any(|w| d.template.ammo.iter().any(|a| a.ammo_type == w.template.ammo_type)));
+        let kit = |d: &Depot| s.soldier().is_some_and(|m| m.weapon.iter().chain(m.stowed.iter()).any(|w| d.template.ammo.iter().any(|a| a.ammo_type == w.template.ammo_type)));
         let ride = s.entry.inside.map(|k| (k, &self.vehicles[k], s.entry.position));
         for d in self.depots.iter().filter(|d| d.team == 0 || d.team == p.team) {
             let t = &d.template;
@@ -497,7 +497,7 @@ impl crate::Sim<'_> {
             };
             let depot = &mut self.depots[d];
             let v = &mut self.vehicles[s];
-            if !alive || v.removed || v.movement.is_none() {
+            if !alive || v.removed || v.soldier().is_none() {
                 continue;
             }
             if v.entry.inside.is_some() && v.entry.inside != depot.on.filter(|_| !depot.on_projectile).map(|o| o.0) {
@@ -507,7 +507,7 @@ impl crate::Sim<'_> {
                 continue;
             }
             if depot.reloading {
-                let m = v.movement.as_mut().unwrap();
+                let m = v.soldier_mut().unwrap();
                 for (k, w) in m.weapon.iter_mut().chain(m.stowed.iter_mut()).enumerate() {
                     let given = depot.reload(w.template.ammo_type, |n| w.reload_ammo(n));
                     if given > 0 {
@@ -535,7 +535,7 @@ impl crate::Sim<'_> {
         for i in 0..self.vehicles.len() {
             let depot = &mut self.depots[d];
             let v = &mut self.vehicles[i];
-            if !v.in_world() || v.movement.is_some() || !depot.serves(v.team) || !depot.within(v.craft.body.pos) {
+            if !v.in_world() || v.soldier().is_some() || !depot.serves(v.team) || !depot.within(v.craft.body.pos) {
                 continue;
             }
             if depot.reloading {
@@ -551,7 +551,7 @@ impl crate::Sim<'_> {
                 && let Some(a) = v.armor.as_mut()
             {
                 let (hp, max) = (a.hp, a.max_hp);
-                if let Some(amount) = depot.repair_vehicle(&v.template, hp, max) {
+                if let Some(amount) = depot.repair_vehicle(&v.body.template, hp, max) {
                     a.give(-amount);
                     if a.hp > hp {
                         self.journal.supply_log.push(SupplyEvent { step, depot: d, vehicle: i, given: Given::Repair(a.hp - hp) });
@@ -677,7 +677,7 @@ mod tests {
         let sol = s.players[a].soldier.unwrap();
         let box_at = s.depots.iter().find(|d| d.template.name.eq_ignore_ascii_case("AmmoboxSupplyDepot")).unwrap().pos;
         let empty = |s: &mut crate::Sim| {
-            let m = s.vehicles[sol].movement.as_mut().unwrap();
+            let m = s.vehicles[sol].soldier_mut().unwrap();
             for w in m.weapon.iter_mut().chain(m.stowed.iter_mut()) {
                 for r in w.mags.iter_mut() {
                     *r = 0;
@@ -685,7 +685,7 @@ mod tests {
             }
         };
         let total = |s: &crate::Sim, k: i32| -> i32 {
-            let m = s.vehicles[sol].movement.as_ref().unwrap();
+            let m = s.vehicles[sol].soldier().unwrap();
             m.weapon.iter().chain(m.stowed.iter()).filter(|w| w.template.ammo_type == k).map(|w| w.mags.iter().sum::<i32>()).sum()
         };
         empty(&mut s);

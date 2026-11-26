@@ -49,7 +49,7 @@ impl<'w> LocalSession<'w> {
 pub fn apply_action(sim: &mut Sim, player: usize, axes: &[(usize, f32)]) {
     let Some(p) = sim.players.get(player) else { return };
     if let Some(i) = p.soldier.filter(|_| p.alive)
-        && let Some(m) = sim.vehicles[i].movement.as_mut()
+        && let Some(m) = sim.vehicles[i].soldier_mut()
     {
         m.set_input(axes);
     }
@@ -233,7 +233,7 @@ impl Snapshot {
         let actions = sim
             .players
             .iter()
-            .map(|p| p.soldier.filter(|_| p.alive).and_then(|i| sim.vehicles[i].movement.as_ref()).filter(|m| m.driven).map(|m| Action::of(&m.input)))
+            .map(|p| p.soldier.filter(|_| p.alive).and_then(|i| sim.vehicles[i].soldier()).filter(|m| m.driven).map(|m| Action::of(&m.input)))
             .collect();
         let (tickets, points) = match &sim.modes.conquest {
             Some(c) => (c.tickets, c.points.iter().map(|p| PointState { team: p.team, get: p.get, lose: p.lose }).collect()),
@@ -320,7 +320,7 @@ impl Snapshot {
                 if let Some(a) = v.armor.as_mut() {
                     *a = crate::damage::Armor::new(a.template.clone());
                 }
-                if let Some(m) = v.movement.as_mut() {
+                if let Some(m) = v.soldier_mut() {
                     m.revive();
                 }
             }
@@ -426,7 +426,7 @@ impl Snapshot {
         // the players' soldiers (made here from the template: no player yet) are theirs: they
         // get in and out with their use key
         for p in &self.players {
-            if let Some(m) = p.soldier.and_then(|i| sim.vehicles.get_mut(i as usize)).and_then(|v| v.movement.as_mut()) {
+            if let Some(m) = p.soldier.and_then(|i| sim.vehicles.get_mut(i as usize)).and_then(|v| v.soldier_mut()) {
                 m.has_player = true;
                 m.human = !p.ai;
             }
@@ -492,7 +492,7 @@ impl Snapshot {
         // the weapons, and a soldier made from its template alone has none (the copy drew empty hands and no ammunition)
         for k in 0..sim.players.len() {
             let (Some(s), team, kit) = (sim.players[k].soldier, sim.players[k].team, sim.players[k].kit) else { continue };
-            let unarmed = sim.vehicles.get(s).and_then(|v| v.movement.as_ref()).is_some_and(|m| m.weapon.is_none() && m.stowed.is_empty());
+            let unarmed = sim.vehicles.get(s).and_then(|v| v.soldier()).is_some_and(|m| m.weapon.is_none() && m.stowed.is_empty());
             if unarmed && let Some(name) = sim.team_kit(team, kit) {
                 sim.arm(s, &name);
             }
@@ -1125,13 +1125,13 @@ mod tests {
             s.step();
         }
         let sol = s.players[p].soldier.expect("the player spawned");
-        let theirs = s.vehicles[sol].movement.as_ref().and_then(|m| m.weapon.as_ref()).map(|f| f.template.name.clone());
+        let theirs = s.vehicles[sol].soldier().and_then(|m| m.weapon.as_ref()).map(|f| f.template.name.clone());
         assert!(theirs.is_some(), "the server's soldier is armed");
         let mut copy = Sim::new(&w, 1.0 / 30.0);
         copy.start_conquest();
         copy.role.remote = true;
         Snapshot::of(&s).write(&mut copy);
-        let ours = copy.vehicles[sol].movement.as_ref().and_then(|m| m.weapon.as_ref()).map(|f| f.template.name.clone());
+        let ours = copy.vehicles[sol].soldier().and_then(|m| m.weapon.as_ref()).map(|f| f.template.name.clone());
         assert_eq!(ours, theirs);
     }
 

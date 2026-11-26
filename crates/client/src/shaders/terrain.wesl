@@ -3,17 +3,20 @@
 // tiles carry their light. In the enhanced profile the sun's shadow darkens it by
 // `detail_scale.yzw`, the ambient over ambient + diffuse (the light's flag says whether it casts them). With the contact shadows
 // theirs darkens it the same way, and Bevy's SSAO takes the ambient part of its light. In the original profile
-// the original's shadows of soldiers and vehicles (`object_shadow`).
+// the original's shadows of soldiers and vehicles (`object_shadow`). With `relief` the detail lit by the sun as a relief
+// (`relief`), and with `aerial` the air's haze before the fog (`aerial.wesl`).
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::main_pass_post_lighting_processing,
-    mesh_view_bindings::{view, fog, lights},
+    mesh_view_bindings::{view, fog, lights, globals},
     mesh_view_types::{DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT, DIRECTIONAL_LIGHT_FLAGS_CONTACT_SHADOWS_ENABLED_BIT},
     shadows::fetch_directional_shadow,
 };
 import bevy_pbr::render::{clustered_forward as clustering, mesh_view_bindings::clustered_lights, pbr_lighting::getDistanceAttenuation};
 import bevy_render::maths::PI;
+import bytefield::shaders::aerial::aerial;
+import bytefield::shaders::clouds::cloud_cover;
 @if(SCREEN_SPACE_AMBIENT_OCCLUSION) import bevy_pbr::render::mesh_view_bindings::screen_space_ambient_occlusion_texture;
 @if(CONTACT_SHADOWS && DEPTH_PREPASS) import bevy_pbr::render::{pbr_functions::calculate_contact_shadow, mesh_view_bindings::contact_shadows_settings};
 
@@ -23,7 +26,13 @@ import bevy_render::maths::PI;
 @group(constants::MATERIAL_BIND_GROUP) @binding(103) var shadow_rows: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(104) var shadow_atlas: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(105) var shadow_sampler: sampler;
+// x the far plane, y the clouds' strength, z the relief's
 @group(constants::MATERIAL_BIND_GROUP) @binding(106) var<uniform> clip: vec4<f32>;
+// The baked shadow (the `.lsb`'s bits, the share in shadow by texel) and where it lies in the original's x and z: xy
+// where it starts, zw 1 / its reach (0 without one). Not on the grass (its 107 is the wind).
+@if(!GRASS) @group(constants::MATERIAL_BIND_GROUP) @binding(108) var baked_mask: texture_2d<f32>;
+@if(!GRASS) @group(constants::MATERIAL_BIND_GROUP) @binding(109) var baked_sampler: sampler;
+@if(!GRASS) @group(constants::MATERIAL_BIND_GROUP) @binding(110) var<uniform> baked_at: vec4<f32>;
 
 // Past the world's far plane (x, the view distance; in the view's depth, as D3D's projection clips), nothing: the sky
 // shows there.
@@ -72,10 +81,11 @@ fn flash_light(p: vec4<f32>, n: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
     return e * view.exposure / PI;
 }
 
-// The sun among the directional lights: the one with light (the statics' shadow map has none: `level.rs`).
+// The sun among the directional lights: the one with light and shadows (the statics' shadow map has no light, the
+// night's fill no shadows: `level.rs`).
 fn sun_index() -> u32 {
     for (var i = 0u; i < lights.n_directional_lights; i = i + 1u) {
-        if (any(lights.directional_lights[i].color.rgb > vec3(0.0))) {
+        if (any(lights.directional_lights[i].color.rgb > vec3(0.0)) && (lights.directional_lights[i].flags & DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) != 0u) {
             return i;
         }
     }
@@ -102,6 +112,46 @@ fn sun_shadow(p: vec4<f32>, n: vec3<f32>, frag: vec2<f32>) -> f32 {
     return 1.0 - (1.0 - s) * lit;
 }
 
+// The terrain's relief (an enhanced-profile addition): the detail texture's brightness taken as a height RELIEF_DEPTH
+// metres deep over its range, lit by the sun at `uv` (the detail's), as a factor round 1 over the tile's own light: the
+// tiles carry the light of the heightmap's slopes already, not of what the detail draws. The light it takes is the sun's
+// share `1 − a` (`a`, the ambient's, `detail_scale.yzw`). Only near the eye: farther the detail's mips flatten it anyway.
+// It stays out of the hills' shadows baked in the tiles (`baked_light`): only the sun's map would darken it there.
+const RELIEF_DEPTH: f32 = 0.15;
+const RELIEF_NEAR: f32 = 25.0;
+const RELIEF_FAR: f32 = 90.0;
+
+fn detail_height(uv: vec2<f32>) -> f32 {
+    return dot(textureSampleBias(detail_texture, detail_sampler, uv, view.mip_bias - 1.5).rgb, vec3(0.299, 0.587, 0.114));
+}
+
+// How much of the sun the tiles' baked shadow leaves at p (Bevy's axes): 1 out of it or without a mask.
+@if(!GRASS)
+fn baked_light(p: vec3<f32>) -> f32 {
+    if (baked_at.z <= 0.0) {
+        return 1.0;
+    }
+    let uv = (vec2(p.x, -p.z) - baked_at.xy) * baked_at.zw;
+    if (any(uv < vec2(0.0)) || any(uv > vec2(1.0))) {
+        return 1.0;
+    }
+    return 1.0 - textureSampleLevel(baked_mask, baked_sampler, uv, 0.0).r;
+}
+
+fn relief(p: vec3<f32>, n: vec3<f32>, to_sun: vec3<f32>, a: vec3<f32>) -> vec3<f32> {
+    let dims = vec2<f32>(textureDimensions(detail_texture));
+    let uv = p.xz * detail_scale.x;
+    let du = 1.0 / dims.x;
+    let dv = 1.0 / dims.y;
+    // (central differences over two texels, in metres: a texel is 1 / (scale · size))
+    let gx = (detail_height(uv + vec2(du, 0.0)) - detail_height(uv - vec2(du, 0.0))) * RELIEF_DEPTH * detail_scale.x * dims.x * 0.5;
+    let gz = (detail_height(uv + vec2(0.0, dv)) - detail_height(uv - vec2(0.0, dv))) * RELIEF_DEPTH * detail_scale.x * dims.y * 0.5;
+    let bumped = normalize(n - vec3(gx, 0.0, gz));
+    let flat_lit = a + (1.0 - a) * max(dot(n, to_sun), 0.0);
+    let bumped_lit = a + (1.0 - a) * max(dot(bumped, to_sun), 0.0);
+    return clamp(bumped_lit / max(flat_lit, vec3(1e-3)), vec3(0.7), vec3(1.3));
+}
+
 fn to_screen(c: vec3<f32>) -> vec3<f32> {
     return select(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, 12.92 * c, c <= vec3(0.0031308));
 }
@@ -119,13 +169,23 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The original's stage 1 carries MIPMAPLODBIAS -1.5: without it the sand near the camera comes out soft.
     // TODO: Bocage's grass, one patch grainier than the original (std dev 20.4 against 16.5), another equal: too much
     // bias on some detail textures?
+@if(!GRASS)
     let d = textureSampleBias(detail_texture, detail_sampler, in.world_position.xz * detail_scale.x, view.mip_bias - 1.5).rgb;
+    // (the grass's blades (`grass.rs`): the detail's mean colour, its smallest mip, without its stones)
+@if(GRASS)
+    let d = textureSampleLevel(detail_texture, detail_sampler, in.world_position.xz * detail_scale.x, 16.0).rgb;
     // (in the screen's space with the exact sRGB curve, as Bevy decodes the textures and encodes the screen: x^2.2 left the
     // dark ground darker, Cassino's)
     // TODO: near the camera the original takes a smaller mip of the colour tiles (blurred in depth, Omaha 268) and we keep
     // sharper 1–2 m patches its detail would hide: which LOD each takes.
-    let base = to_screen(clamp(pbr_input.material.base_color.rgb, vec3(0.0), vec3(1.0)));
+    // (scaled down by its largest channel, not clipped per channel: the grass's bright tips (`grass.rs`, over 1 in linear)
+    // turned golden or olive ground pure yellow; the terrain itself stays under 1 and is unchanged)
+    let c = max(pbr_input.material.base_color.rgb, vec3(0.0));
+    let base = to_screen(c / max(max(c.r, c.g), max(c.b, 1.0)));
     var lit = clamp(base + to_screen(clamp(d, vec3(0.0), vec3(1.0))) - 0.5, vec3(0.0), vec3(1.0));
+    // (and somewhat more saturated than the ground: living leaves)
+@if(GRASS)
+    lit = clamp(mix(vec3(dot(lit, vec3(0.299, 0.587, 0.114))), lit, 1.12), vec3(0.0), vec3(1.0));
     var s = 1.0;
     if (any(detail_scale.yzw < vec3(1.0)) && lights.n_directional_lights > 0u) {
         s = sun_shadow(in.world_position, normalize(in.world_normal), in.position.xy);
@@ -136,6 +196,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
 }
     }
+    // (a cloud takes the sun as a shadow does: clip.y, how much at its middle)
+    if (clip.y > 0.0 && any(detail_scale.yzw < vec3(1.0)) && lights.n_directional_lights > 0u) {
+        s *= 1.0 - clip.y * cloud_cover(in.world_position.xyz, lights.directional_lights[sun_index()].direction_to_light, globals.time);
+    }
     // (the light the shadow leaves is the ambient: what the occlusion takes)
     var ao = 1.0;
 @if(SCREEN_SPACE_AMBIENT_OCCLUSION) {
@@ -143,6 +207,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     ao = saturate(textureLoad(screen_space_ambient_occlusion_texture, vec2<i32>(in.position.xy - view.viewport.xy), 0i).r / 0.85);
 }
     let unshadowed = lit;
+    // (the relief where the sun reaches, before its shadow darkens it)
+@if(!GRASS) {
+    let near = 1.0 - smoothstep(RELIEF_NEAR, RELIEF_FAR, distance(in.world_position.xyz, view.world_position));
+    if (clip.z > 0.0 && near > 0.0 && lights.n_directional_lights > 0u && s > 0.0) {
+        let sun = lights.directional_lights[sun_index()];
+        lit = clamp(lit * mix(vec3(1.0), relief(in.world_position.xyz, normalize(in.world_normal), sun.direction_to_light, detail_scale.yzw), clip.z * near * s * baked_light(in.world_position.xyz)), vec3(0.0), vec3(1.0));
+    }
+}
     if (s < 1.0 || ao < 1.0) {
         lit = lit * (detail_scale.yzw * ao + (1.0 - detail_scale.yzw) * s);
     }
@@ -155,6 +227,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (shadow_params.x > 0.0) {
         lit *= object_shadow(shadow_params, in.world_position.xyz);
     }
+    // (the air's haze, before the fog)
+    lit = to_screen(clamp(aerial(from_screen(lit), in.world_position.xyz), vec3(0.0), vec3(1.0)));
     // D3D's vertex fog (RANGEFOGENABLE: by the distance), mixed in the screen's space, not Bevy's linear one
     let f = clamp((distance(in.world_position.xyz, view.world_position) - fog.be.x) / (fog.be.y - fog.be.x), 0.0, 1.0);
     let fogged = mix(lit, to_screen(clamp(fog.base_color.rgb, vec3(0.0), vec3(1.0))), f);

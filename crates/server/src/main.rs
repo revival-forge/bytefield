@@ -39,7 +39,7 @@ fn main() {
             println!("  .\\bytefield-server \"C:\\Games\\Battlefield 1942\" bf1942 El_Alamein --bots 16");
             println!("To play, or to host a game for friends, open bytefield.exe (CREATE GAME). All the options:\n");
         }
-        eprintln!("usage: bytefield-server <game_dir> <mod> <level> [--mode conquest] [--port {PORT}] [--bots N] (default bots3) [--seconds S] [--max-players N] [--start-delay S] [--min-players N] [--friendly-fire PERCENT] [--kickback PERCENT] [--no-nose-cam] [--welcome LINE]... [--snapshots-per-second 30|15|10] [--packet-bytes 1200]");
+        eprintln!("usage: bytefield-server <game_dir> <mod> <level> [--mode conquest] [--port {PORT}] [--bots N] (default bots) [--seconds S] [--max-players N] [--start-delay S] [--min-players N] [--friendly-fire PERCENT] [--kickback PERCENT] [--no-nose-cam] [--welcome LINE]... [--snapshots-per-second 30|15|10] [--packet-bytes 1200]");
         if own_console() {
             println!("\nPress Enter to close.");
             let _ = std::io::stdin().read_line(&mut String::new());
@@ -54,8 +54,8 @@ fn main() {
     let seconds = num("--seconds");
     let world: &'static World = Box::leak(Box::new(World::load(a[0].as_ref(), &a[1], &a[2], &mode).expect("level")));
     let better = false;
-    // bots3 plays the bots unless `--bot-ai bots2` asks for the other
-    bytefield_sim::bots3::use_by_default(opt("--bot-ai").is_none_or(|v| v.starts_with("bots3")));
+    // the bots play unless `--bot-ai` asks for another AI
+    bytefield_sim::bots::use_by_default(opt("--bot-ai").is_none_or(|v| bytefield_sim::bots::is_name(&v)));
     let mut sim = round(world, bots, better);
     // the mod's `ServerSettings.con` (else the game's): its rules and pre-game; then the options
     let con = bytefield_sim::damage::server_settings_file(a[0].as_ref(), &a[1]).unwrap_or_default();

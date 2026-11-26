@@ -213,7 +213,7 @@ impl crate::Sim<'_> {
     pub(crate) fn kit_rooms(&mut self) {
         for v in self.vehicles.iter_mut().filter(|v| v.in_world()) {
             let pos = v.craft.body.pos;
-            if let Some(m) = v.movement.as_mut().filter(|m| !m.kit_parts.is_empty()) {
+            if let Some(m) = v.soldier_mut().filter(|m| !m.kit_parts.is_empty()) {
                 m.kit_room = Self::room_for_jump(self.world, pos);
             }
         }
@@ -289,14 +289,14 @@ mod nochute {
             let (x, z) = (1000.0, 1000.0);
             let h = w.level.engine_height_and_normal(x, z).0;
             let sol = s.spawn_vehicle("USSoldier", [x, h + 120.0, z], [0.0; 3]).unwrap();
-            let m = s.vehicles[sol].movement.as_mut().unwrap();
+            let m = s.vehicles[sol].soldier_mut().unwrap();
             m.has_player = true;
             m.kit_parts = w.kit_parts("Us_Assault");
             let mut free = false;
             for _ in 0..300 {
-                s.vehicles[sol].movement.as_mut().unwrap().set_input(&[]);
+                s.vehicles[sol].soldier_mut().unwrap().set_input(&[]);
                 s.step();
-                free |= s.vehicles[sol].movement.as_ref().unwrap().in_state(&["Lb_ParachuteFall"]);
+                free |= s.vehicles[sol].soldier().unwrap().in_state(&["Lb_ParachuteFall"]);
             }
             assert_eq!(free, chute, "{level}");
         }
@@ -318,16 +318,16 @@ mod nochute {
             let (x, z) = (1000.0, 1000.0);
             let h = w.level.engine_height_and_normal(x, z).0;
             let sol = s.spawn_vehicle("EndorSoldier", [x, h + 120.0, z], [0.0; 3]).unwrap();
-            let m = s.vehicles[sol].movement.as_mut().unwrap();
+            let m = s.vehicles[sol].soldier_mut().unwrap();
             m.has_player = true;
             if with {
                 m.kit_parts = w.kit_parts("Rebel_Trooper_No_Nades");
             }
             let mut free = false;
             for _ in 0..300 {
-                s.vehicles[sol].movement.as_mut().unwrap().set_input(&[]);
+                s.vehicles[sol].soldier_mut().unwrap().set_input(&[]);
                 s.step();
-                free |= s.vehicles[sol].movement.as_ref().unwrap().in_state(&["Lb_ParachuteFall"]);
+                free |= s.vehicles[sol].soldier().unwrap().in_state(&["Lb_ParachuteFall"]);
             }
             (free, s.vehicles[sol].craft.body.pos[1] - h)
         };

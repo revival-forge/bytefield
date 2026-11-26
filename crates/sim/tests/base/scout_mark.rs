@@ -18,7 +18,7 @@ fn the_binoculars_place_a_scout_camera() {
     let sol = s.spawn_vehicle(&skin, [x, y, z], [0.0; 3]).unwrap();
     s.vehicles[sol].team = 2;
     assert!(s.vehicles[sol].give_kit(w.kit_weapons(&kit), Some("Binoculars")));
-    s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
+    s.vehicles[sol].soldier_mut().unwrap().has_player = true;
     for _ in 0..30 {
         s.step();
     }
@@ -41,7 +41,7 @@ fn the_binoculars_place_a_scout_camera() {
     // (not straight down: the ray starts 2 m along it, `projectilePosition`, under the ground)
     fire_binoculars(&mut s, sol, 40, -0.6);
     let cams: Vec<usize> = s.scout_cameras().map(|(k, _)| k).collect();
-    assert_eq!(cams.len(), 1, "{:?}", s.vehicles[sol].movement.as_ref().unwrap().camera_rows);
+    assert_eq!(cams.len(), 1, "{:?}", s.vehicles[sol].soldier().unwrap().camera_rows);
     assert_ne!(cams[0], first);
     assert_eq!(s.team_scout_cameras(2), cams, "the scout's team's");
     assert!(s.team_scout_cameras(1).is_empty(), "not the other team's");

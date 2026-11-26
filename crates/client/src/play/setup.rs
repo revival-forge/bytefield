@@ -22,6 +22,8 @@ pub struct Setup {
     /// the first spawn waits on the screen when dead for the player to choose (as the original's;
     /// not with `--kit`, a script or a screenshot)
     pub choose: bool,
+    /// `--kit` was given (with `BYTEFIELD_PLAYER_BOT`, the filmed bot keeps it, [`bytefield_sim::bots::film_kit`])
+    pub kit_given: bool,
     /// playing on a server: the round is its, this `Sim` a copy of it
     pub net: Option<UdpClient>,
     /// `--replay`: the ticket's tick and hash (`replay.rs`)
@@ -59,7 +61,13 @@ pub fn start(s: Setup, commands: &mut Commands) {
         }
         None => {
             // (`--team 0`: the shorter, `getTeamToAddPlayer`)
-            let p = sim.join(s.team, false);
+            // `BYTEFIELD_PLAYER_BOT=1`: the bots' AI plays the player too, the camera on it (to film a round)
+            let p = sim.join(s.team, std::env::var_os("BYTEFIELD_PLAYER_BOT").is_some());
+            if std::env::var_os("BYTEFIELD_PLAYER_BOT").is_some() {
+                bytefield_sim::bots::film(Some(p));
+                // (`--kit` given: the filmed bot keeps it at every spawn, not the one its side's head would pick)
+                bytefield_sim::bots::film_kit(s.kit_given.then_some(s.kit));
+            }
             sim.players[p].kit = s.kit;
             sim.hold_spawn(p, s.choose);
             // to try a spawn group from a script (a level's paratroopers: Market_Garden, 10): BYTEFIELD_SPAWN_GROUP=<group>
@@ -88,6 +96,16 @@ pub fn start(s: Setup, commands: &mut Commands) {
     let template = bytefield_sim::replica::soldier_template(team);
     if s.bots > 0 && s.net.is_none() && !on_orig {
         sim.enable_bots();
+        // to film a mind against another (as `tournament3 --a --b`): BYTEFIELD_MINDS="1=bots:cover-fight;2=bots"
+        if let Ok(v) = std::env::var("BYTEFIELD_MINDS") {
+            let level = s.world.level.name.clone();
+            for (team, name) in v.split(';').filter_map(|x| x.split_once('=')) {
+                let team: u32 = team.trim().parse().unwrap_or_else(|_| panic!("BYTEFIELD_MINDS: {team} is not a team"));
+                assert!(bytefield_sim::bots::is_name(name.trim()), "BYTEFIELD_MINDS: no mind called {name}");
+                sim.set_minds(team, bytefield_sim::bots::mind(name.trim(), &level, 0));
+                info!("team {team}: mind {name}");
+            }
+        }
         // (as `gameStatusPlaying` fills the server: each to `getTeamToAddPlayer`'s team)
         for i in 0..s.bots {
             let p = sim.join(0, true);
@@ -184,7 +202,7 @@ pub(super) fn center_1p(world: &World, template: &str) -> [f32; 3] {
 /// `setCharacterHeight` under the soldier's centre, so the poses move up by that much.
 /// The client's formula; against the original's rendering zoomed, the weapon within millimetres.
 pub(super) fn arms_offset(g: &Game, i: usize) -> Vec3 {
-    let m = g.session.sim.vehicles[i].movement.as_ref();
+    let m = g.session.sim.vehicles[i].soldier();
     let height = m.and_then(|m| m.skeleton.as_ref()).map_or(-1.0, |s| s.height);
     let w = g.arms_eased.map_or_else(|| arms_target(g, i), |e| e.0);
     let c = g.center_1p;
@@ -194,7 +212,7 @@ pub(super) fn arms_offset(g: &Game, i: usize) -> Vec3 {
 /// The position the weapon asks of the arms: `soldierZoomPosition` zoomed, else `soldierCameraPosition`.
 pub(super) fn arms_target(g: &Game, i: usize) -> [f32; 3] {
     let prop = if zoom(g).is_some() { "soldierzoomposition" } else { "soldiercameraposition" };
-    let m = g.session.sim.vehicles[i].movement.as_ref();
+    let m = g.session.sim.vehicles[i].soldier();
     m.and_then(|m| m.weapon.as_ref()).and_then(|w| template_vec(g.session.sim.world, &w.template.name, prop)).unwrap_or([0.0; 3])
 }
 

@@ -1,0 +1,5 @@
+# The fixed rival from 1.23.0 (25-nov-2026): anchor 4 with `heard-walk` (turned to a shot heard with nobody in sight, it walks on
+# while it looks, rather than stand a second facing the noise). Never edited: a new anchor is a new file; if a later default
+# changes how `bots` plays, its mind gets the `no-` of it, as anchors 2 to 4 (at 1.24.0, `no-fov+no-recall`).
+mind = "bots:no-fov+no-recall"
+about = "anchor 5: bots 1.23.0 (heard-walk by default), defaults, variants off"

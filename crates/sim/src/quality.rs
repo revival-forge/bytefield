@@ -1,4 +1,4 @@
-//! What can be seen of a side from the outside, one card at a time from the B01..B18 list: the `bots3` dashboard.
+//! What can be seen of a side from the outside, one card at a time from the B01..B18 list: the `bots` dashboard.
 //! Like [`crate::dumb::Detector`], the core ([`Meter::sample`]) only sees neutral snapshots (`P`, `V`, `F`) once per
 //! second plus shots and heals as they happen, so the same number holds for any mind and can be tested without a match;
 //! [`Meter::step`] extracts them from a [`crate::Sim`] (never from a bot's internal state). B16 is a [`crate::dumb::Watcher`] inside.
@@ -102,6 +102,9 @@ pub struct P {
     pub hidden: bool,
     /// B08: carries an anti-tank weapon
     pub at: bool,
+    /// B35: on foot, healthy, still since the last sample and with an enemy in sight at [`B35_NEAR_M`]..[`B35_FAR_M`]: whether its
+    /// crouched body is hidden from that enemy (`None`: not a case; only worked out for those cases, it costs rays)
+    pub b35: Option<bool>,
 }
 
 /// A vehicle with someone inside.
@@ -329,7 +332,7 @@ struct CaseB18 {
 pub struct Meter {
     pub watcher: Watcher,
     /// B21 is not measured: on maps whose profile makes the driver wait outside a defended flag on purpose
-    /// ([`crate::bots3::body::MapProfile::enter_wait`], Berlin) an arrival that stays outside is not a failure
+    /// ([`crate::bots::body::MapProfile::enter_wait`], Berlin) an arrival that stays outside is not a failure
     pub b21_off: bool,
     now: f64,
     first: Option<f64>,
@@ -376,6 +379,8 @@ pub struct Meter {
     b17: BTreeMap<usize, (usize, f64, Option<f64>)>,
     n: Iter2,
     air: Air,
+    books: Books,
+    st: Streetwise,
 }
 
 /// B17: an enemy in sight within this distance, m, is "new" after this long without seeing anyone, s; the first shot counts if it comes before
@@ -431,6 +436,8 @@ impl Meter {
             b17: BTreeMap::new(),
             n: Iter2::default(),
             air: Air::default(),
+            books: Books::default(),
+            st: Streetwise::default(),
         }
     }
 
@@ -907,6 +914,7 @@ impl Meter {
         }
 
         self.sample_iter2(t, &alive_now, vs, fs);
+        self.books.sample(t, &alive_now, fs);
 
         // B03 and B12 (the vehicles with people)
         let team_of = |id: usize| ps.iter().find(|p| p.id == id).map_or(0, |p| p.team);
@@ -977,10 +985,12 @@ impl Meter {
             if ps.iter().any(|p| p.id == q && p.alive && p.vehicle.is_none() && d(p.pos, pos) > FOLLOW_M) {
                 l.b12_follow[0] += 1;
             }
-            // B22: a passenger of a helicopter flight that is on foot near an enemy flag
-            // TODO: only takeable flags count, so a flight that lands its people by an enemy base that cannot be taken (DC_No_Fly_Zone,
-            // DC_No_Fly_Zone_Day2: the only targets there) counts 0
-            if heli && ps.iter().any(|p| p.id == q && p.alive && p.vehicle.is_none() && fs.iter().any(|f| f.takeable && f.team != team && d(p.pos, f.pos) < B22_FLAG_M)) {
+            // B22: a passenger of a helicopter flight that is on foot near an enemy flag: a takeable one, or an enemy base that
+            // cannot be taken when the map has nothing else to take from this side (DC_No_Fly_Zone and its Day2: the bases are the
+            // only targets)
+            let only_bases = !fs.iter().any(|f| f.takeable && f.team != team);
+            let target = |f: &F| f.team != team && (f.takeable || only_bases);
+            if heli && ps.iter().any(|p| p.id == q && p.alive && p.vehicle.is_none() && fs.iter().any(|f| target(f) && d(p.pos, f.pos) < B22_FLAG_M)) {
                 let set = self.n.passengers.entry(craft).or_default();
                 set.insert(q);
                 if set.len() >= 2 && self.n.counted.insert(craft) {
@@ -1135,6 +1145,11 @@ impl Meter {
             }
             let enemy_near = any_near(other_team(team), f.pos, ENEMY_M);
             let own_inside = any_near(team, f.pos, f.radius);
+            if enemy_near && crate::debug::options().quality_b13 {
+                let inside: Vec<String> = alive_now.iter().filter(|p| p.team == team && d(p.pos, f.pos) < f.radius).map(|p| format!("{}:{}:{:.0}:{:.0}", p.id, p.vehicle.map_or("foot".into(), |v| v.to_string()), p.pos[0], p.pos[2])).collect();
+                let enemies = alive_now.iter().filter(|p| p.team == other_team(team) && d(p.pos, f.pos) < ENEMY_M).count();
+                eprintln!("b13 t={t:.0} flag={i} team={team} defended={own_inside} enemies={enemies} inside=[{}]", inside.join(","));
+            }
             if enemy_near {
                 let l = &mut self.side[team as usize];
                 l.b13[1] += 1;
@@ -1176,12 +1191,13 @@ impl Meter {
                 player_of_soldier[i] = Some(k);
             }
         }
+        self.st.step(s, t, &player_of_soldier);
         for f in s.journal.fired.get(self.fired_seen..).unwrap_or(&[]) {
             let v = &s.vehicles[f.1];
-            // (the round can end in the step of the shot: `clear_world` empties the projectiles, and the index is gone)
-            // TODO: a test that fires in the step the tickets run out, with the meter on (Coral_Sea at 8 min fell here)
+            // (the round can end in the step of the shot: `clear_world` empties the projectiles, and the index is gone; test
+            // `meter_last_shot` in tests/base)
             let shell = f.3.and_then(|i| s.projectiles.get(i).map(|p| (i, p)));
-            let (k, on_foot) = if v.is_soldier() {
+            let (k, on_foot) = if v.has_soldier_contact() {
                 (player_of_soldier[f.1], true)
             } else {
                 let seat = shell.map_or(0, |(_, p)| p.seat);
@@ -1262,7 +1278,7 @@ impl Meter {
                 let v = &s.vehicles[sol];
                 let now_pos = v.craft.body.pos;
                 let moved = d(now_pos, pos) > B14_MOVE_M;
-                let forward = v.movement.as_ref().map_or([0.0, 0.0, 1.0], |m| m.camera_in_world(&v.craft.body).0[2]);
+                let forward = v.soldier().map_or([0.0, 0.0, 1.0], |m| m.camera_in_world(&v.craft.body).0[2]);
                 let towards = |e: [f32; 3]| crate::bot_api::side(forward, [e[0] - now_pos[0], e[2] - now_pos[2]]).abs() < B14_ANGLE;
                 let looks = visible_enemy(s, k, B14_SIGHT_M).is_some_and(towards);
                 self.b14(p.team, moved || looks);
@@ -1322,7 +1338,8 @@ impl Meter {
                     deaths: p.deaths,
                     life: p.soldier,
                     hidden: false,
-                    at: sol.and_then(|v| v.movement.as_ref()).is_some_and(|m| m.weapon.iter().chain(m.stowed.iter()).any(|w| {
+                    b35: None,
+                    at: sol.and_then(|v| v.soldier()).is_some_and(|m| m.weapon.iter().chain(m.stowed.iter()).any(|w| {
                         let n = w.template.name.to_ascii_lowercase();
                         AT_WEAPONS.iter().any(|k| n.contains(k)) && !n.contains("grenade")
                     })),
@@ -1338,7 +1355,7 @@ impl Meter {
         let water = s.world.level.terrain.water_level as f32;
         let vs: Vec<V> = on_board
             .into_iter()
-            .filter(|(j, _)| s.vehicles.get(*j).is_some_and(|v| !v.removed && !v.is_soldier()))
+            .filter(|(j, _)| s.vehicles.get(*j).is_some_and(|v| !v.removed && !v.has_soldier_contact()))
             .map(|(j, occupants)| {
                 let v = &s.vehicles[j];
                 let class = VehicleClass::of(v);
@@ -1366,6 +1383,14 @@ impl Meter {
                 let hidden = s.hidden([e.pos[0], e.pos[1] + 0.6, e.pos[2]], [p.pos[0], p.pos[1] + 0.3, p.pos[2]]);
                 ps[i].hidden = hidden;
             }
+        }
+        // B35: the still and healthy on foot with an enemy in sight; is their crouched body hidden from it?
+        for p in ps.iter_mut() {
+            if !p.alive || p.vehicle.is_some() || p.hp <= B35_HP || !(1..=2).contains(&p.team) || self.last_pos.get(&p.id).is_none_or(|&q| d(q, p.pos) > B35_STILL_M) {
+                continue;
+            }
+            let Some(e) = visible_enemy(s, p.id, B35_FAR_M).filter(|&e| d(e, p.pos) >= B35_NEAR_M) else { continue };
+            p.b35 = Some(s.hidden([e[0], e[1] + 0.6, e[2]], [p.pos[0], p.pos[1] + B35_CROUCH_DY, p.pos[2]]));
         }
         self.sample(t, &ps, &vs, &fs);
     }
@@ -1502,6 +1527,8 @@ impl Meter {
             put("B26_hits", Some(n.b26_hits as f64));
             put("B26_hits_pct", pct(n.b26_hits, n.b26_shots));
             put("B26_crashes", Some(n.b26_crashes as f64));
+            self.books.put(team, &mut put);
+            self.st.put(team, &mut put);
             sides.insert(team.to_string(), Value::Object(m));
         }
         let dumb = self.watcher.finish(json!({}));
@@ -1529,6 +1556,10 @@ pub struct ContextB15 {
     pub flag_m: Option<f32>,
     /// distance to the nearest own medic alive (another player carrying a medical kit), m
     pub medic_m: Option<f32>,
+    /// own players alive within a voice's reach ([`crate::bot_api::VOICE_M`])
+    pub mates_near: u32,
+    /// a mine or an explosive pack in hand
+    pub explosive: bool,
 }
 
 /// B15: does message `key` with `ctx` around have a cause? `None`: it is an acknowledgement (ROGER, NEGATIVE…), which neither asks for nor warns of anything and does not
@@ -1545,6 +1576,14 @@ pub fn cause_b15(key: &str, ctx: &ContextB15) -> Option<bool> {
         k if k == r::AIRPLANE_SPOTTED.key => ctx.air,
         k if k == r::SHIP_SPOTTED.key || k == r::SUBMARINE_SPOTTED.key => ctx.boat,
         k if k == r::UNIT_SPOTTED.key || k == r::SCOUT_SPOTTED.key => ctx.any,
+        // (the streetwise lines: "cover me" and "check your six" to someone near, the latter with an enemy in sight; "reinforcements"
+        // with nobody of its own near)
+        k if k == r::LOCAL_COVER_ME.key => ctx.mates_near > 0,
+        k if k == r::LOCAL_CHECK_YOUR_SIX.key => ctx.mates_near > 0 && ctx.any,
+        k if k == r::REINFORCEMENT.key => ctx.mates_near == 0,
+        // ("fire in the hole" with a mine or a charge in hand; "fire!" with an enemy in sight)
+        k if k == r::LOCAL_FIRE_IN_HOLE.key => ctx.explosive,
+        k if k == r::LOCAL_FIRE.key => ctx.any,
         k if k == r::ATTACK.key || k == r::DEFEND.key || k == r::GO_FOR_ENEMY_FLAG.key || k == r::LOCAL_GO_FOR_THE_FLAG.key || k == r::PROTECT_FLAG.key || k == r::GET_FLAG_BACK.key => {
             ctx.flag_m.is_some_and(|m| m < B15_FLAG_M)
         }
@@ -1570,15 +1609,27 @@ fn context_b15(s: &crate::Sim, e: &crate::radio::RadioEvent) -> ContextB15 {
         .map(|(_, q)| q)
         .filter_map(|q| {
             let w = s.vehicles.get(q.soldier?)?;
-            let m = w.movement.as_ref()?;
+            let m = w.soldier()?;
             let items: Vec<(usize, String)> = m.weapon.iter().chain(m.stowed.iter()).map(|w| (w.template.item_index.max(0) as usize, w.template.name.clone())).collect();
-            (crate::bots3::team::Kind::de(&items) == crate::bots3::team::Kind::Medic).then(|| d(w.craft.body.pos, sol.craft.body.pos))
+            (crate::bots::team::Kind::de(&items) == crate::bots::team::Kind::Medic).then(|| d(w.craft.body.pos, sol.craft.body.pos))
         })
         .min_by(f32::total_cmp);
-    let eye = sol.movement.as_ref().map_or(sol.craft.body.pos, |m| m.camera_in_world(&sol.craft.body).1);
+    let eye = sol.soldier().map_or(sol.craft.body.pos, |m| m.camera_in_world(&sol.craft.body).1);
+    c.explosive = sol.soldier().and_then(|m| m.weapon.as_ref()).is_some_and(|w| {
+        let n = w.template.name.to_ascii_lowercase();
+        n.contains("mine") || n.contains("exppack") || n.contains("explosive")
+    });
     let key = e.msg.key;
     use crate::radio as r;
-    if [r::ARMOR_SPOTTED.key, r::INFANTRY_SPOTTED.key, r::AIRPLANE_SPOTTED.key, r::SHIP_SPOTTED.key, r::SUBMARINE_SPOTTED.key, r::UNIT_SPOTTED.key, r::SCOUT_SPOTTED.key].contains(&key) {
+    c.mates_near = s
+        .players
+        .iter()
+        .enumerate()
+        .filter(|(k, q)| q.alive && q.team == e.team && *k != e.player)
+        .filter_map(|(_, q)| s.vehicles.get(q.soldier?))
+        .filter(|w| d(w.entry.inside.and_then(|i| s.vehicles.get(i)).map_or(w.craft.body.pos, |c| c.craft.body.pos), sol.craft.body.pos) <= crate::bot_api::VOICE_M)
+        .count() as u32;
+    if [r::ARMOR_SPOTTED.key, r::INFANTRY_SPOTTED.key, r::AIRPLANE_SPOTTED.key, r::SHIP_SPOTTED.key, r::SUBMARINE_SPOTTED.key, r::UNIT_SPOTTED.key, r::SCOUT_SPOTTED.key, r::LOCAL_CHECK_YOUR_SIX.key, r::LOCAL_FIRE.key].contains(&key) {
         for q in s.players.iter().filter(|q| q.alive && q.team != e.team && (1..=2).contains(&q.team)) {
             let Some(w) = q.soldier.and_then(|i| s.vehicles.get(i)) else { continue };
             let car = w.entry.inside.and_then(|i| s.vehicles.get(i));
@@ -1612,7 +1663,7 @@ fn context_b15(s: &crate::Sim, e: &crate::radio::RadioEvent) -> ContextB15 {
 fn visible_enemy(s: &crate::Sim, k: usize, r: f32) -> Option<[f32; 3]> {
     let p = &s.players[k];
     let v = s.vehicles.get(p.soldier?)?;
-    let eye = v.movement.as_ref().map_or(v.craft.body.pos, |m| m.camera_in_world(&v.craft.body).1);
+    let eye = v.soldier().map_or(v.craft.body.pos, |m| m.camera_in_world(&v.craft.body).1);
     let mut near: Vec<(f32, [f32; 3])> = s
         .players
         .iter()
@@ -1646,6 +1697,365 @@ fn dumb_by_side(r: &Value) -> Value {
     Value::Object(out)
 }
 
+/// B35: healthy on foot means above this health, 0 to 1; the enemy in sight counts between these distances, m; still is having moved
+/// less than this since the last sample, m; the crouched body is looked at this far from the body's point (a metre over the ground), m.
+pub const B35_HP: f32 = 0.6;
+pub const B35_NEAR_M: f32 = 20.0;
+pub const B35_FAR_M: f32 = 120.0;
+pub const B35_STILL_M: f32 = 0.5;
+pub const B35_CROUCH_DY: f32 = -0.2;
+/// B32: an attacker on foot arrives at a flag it does not own when it comes within this, m; its direction from the flag falls in one of
+/// [`B32_SECTORS`] sectors; distinct sectors are counted per flag and window of this length, s, with two arrivals or more.
+pub const B32_NEAR_M: f32 = 30.0;
+pub const B32_SECTORS: u32 = 8;
+pub const B32_WINDOW_S: f64 = 180.0;
+/// B36: a squad arrives when two or more of a side come within this of an enemy flag in [`B36_WINDOW_S`] s; it is a case when the
+/// flag has a defender within the same distance; it is met when the attackers within it are at least the defenders at some sample
+/// of the following [`B36_WINDOW_S`] s.
+pub const B36_NEAR_M: f32 = 60.0;
+pub const B36_WINDOW_S: f64 = 20.0;
+/// B28: a capture is uncontested with no enemy within this, m, in the last [`B28_TAKE_S`] s; an enemy flag is empty with nobody of
+/// either side within it.
+pub const B28_NEAR_M: f32 = 60.0;
+pub const B28_TAKE_S: f64 = 20.0;
+/// The real presence around a flag: enemies alive within this, m (what a side's estimate of the enemy can be checked against).
+pub const PRESENCE_M: f32 = 150.0;
+
+/// The real presence: per flag, how many players of the other side than `team` are alive within [`PRESENCE_M`].
+pub fn real_presence(alive: &[P], fs: &[F], team: u32) -> Vec<u32> {
+    fs.iter().map(|f| alive.iter().filter(|p| p.alive && p.team != team && (1..=2).contains(&p.team) && d(p.pos, f.pos) < PRESENCE_M).count() as u32).collect()
+}
+
+#[derive(Default, Debug, Clone)]
+struct SideBooks {
+    /// B35: still cases whose crouched body was hidden, and still cases
+    b35: [u32; 2],
+    /// B36: squad arrivals that matched the defenders, and squad arrivals at a defended flag
+    b36: [u32; 2],
+    /// B28: uncontested captures, captures; seconds of enemy flags with nobody of either side near
+    b28: [u32; 2],
+    b28_empty_s: u32,
+    /// real presence at the own flags: flag samples, the sum of enemies near, and samples with 4 or more
+    presence: [u32; 3],
+}
+
+/// The cards for the books' steps (B28, B32, B35, B36) and the real presence, from the same snapshots as the rest.
+#[derive(Default, Debug)]
+struct Books {
+    s: [SideBooks; 3],
+    /// per player: its soldier, and whether it was within [`B32_NEAR_M`] and [`B36_NEAR_M`] of each flag in the last sample
+    near: BTreeMap<usize, (Option<usize>, Vec<(bool, bool)>)>,
+    /// B32: per (side, flag, window), the arrivals and their sectors
+    arrivals: BTreeMap<(u32, usize, u64), (u32, BTreeSet<u32>)>,
+    /// B36: the recent entries per (side, flag): (when, player); the open cases (side, flag, when, met); per (side, flag), the end
+    /// of the last case
+    entries: BTreeMap<(u32, usize), Vec<(f64, usize)>>,
+    open: Vec<(u32, usize, f64, bool)>,
+    busy: BTreeMap<(u32, usize), f64>,
+    /// B28: per flag, its owner and when each side was last within [`B28_NEAR_M`]
+    owner: Vec<u32>,
+    last_near: Vec<[f64; 3]>,
+    t0: Option<f64>,
+}
+
+impl Books {
+    fn sample(&mut self, t: f64, alive: &[P], fs: &[F]) {
+        let t0 = *self.t0.get_or_insert(t);
+        let count = |team: u32, f: &F, r: f32| alive.iter().filter(|p| p.team == team && d(p.pos, f.pos) < r).count() as u32;
+        // B35
+        for p in alive {
+            if let Some(h) = p.b35 {
+                let l = &mut self.s[p.team as usize];
+                l.b35[1] += 1;
+                l.b35[0] += h as u32;
+            }
+        }
+        // B32 and B36: who comes within reach of a flag it does not own
+        for p in alive {
+            let now: Vec<(bool, bool)> = fs.iter().map(|f| (d(p.pos, f.pos) < B32_NEAR_M, d(p.pos, f.pos) < B36_NEAR_M)).collect();
+            let prev = self.near.insert(p.id, (p.life, now.clone()));
+            let Some((_, prev)) = prev.filter(|x| x.0 == p.life && x.1.len() == fs.len()) else { continue };
+            for (i, f) in fs.iter().enumerate() {
+                if !f.takeable || f.team == p.team {
+                    continue;
+                }
+                if now[i].0 && !prev[i].0 && p.vehicle.is_none() {
+                    let a = (p.pos[2] - f.pos[2]).atan2(p.pos[0] - f.pos[0]).rem_euclid(std::f32::consts::TAU);
+                    let sector = ((a / std::f32::consts::TAU * B32_SECTORS as f32) as u32).min(B32_SECTORS - 1);
+                    let e = self.arrivals.entry((p.team, i, ((t - t0) / B32_WINDOW_S) as u64)).or_default();
+                    e.0 += 1;
+                    e.1.insert(sector);
+                }
+                if now[i].1 && !prev[i].1 && (1..=2).contains(&f.team) {
+                    let key = (p.team, i);
+                    let es = self.entries.entry(key).or_default();
+                    es.retain(|x| t - x.0 <= B36_WINDOW_S && x.1 != p.id);
+                    es.push((t, p.id));
+                    let free = self.busy.get(&key).is_none_or(|&end| t >= end);
+                    if es.len() >= 2 && free && count(f.team, f, B36_NEAR_M) >= 1 {
+                        self.open.push((p.team, i, t, false));
+                        self.busy.insert(key, t + B36_WINDOW_S);
+                        es.clear();
+                    }
+                }
+            }
+        }
+        let ids: BTreeSet<usize> = alive.iter().map(|p| p.id).collect();
+        self.near.retain(|k, _| ids.contains(k));
+        let mut open = std::mem::take(&mut self.open);
+        open.retain_mut(|c| {
+            if let Some(f) = fs.get(c.1) {
+                c.3 |= count(c.0, f, B36_NEAR_M) >= count(3 - c.0, f, B36_NEAR_M);
+            }
+            if t - c.2 < B36_WINDOW_S - 0.5 {
+                return true;
+            }
+            let l = &mut self.s[c.0 as usize];
+            l.b36[1] += 1;
+            l.b36[0] += c.3 as u32;
+            false
+        });
+        self.open = open;
+        // B28 and the real presence
+        if self.owner.len() != fs.len() {
+            self.owner = fs.iter().map(|f| f.team).collect();
+            self.last_near = vec![[f64::NEG_INFINITY; 3]; fs.len()];
+        }
+        for (i, f) in fs.iter().enumerate() {
+            for team in 1..=2u32 {
+                if count(team, f, B28_NEAR_M) > 0 {
+                    self.last_near[i][team as usize] = t;
+                }
+            }
+            if self.owner[i] != f.team {
+                self.owner[i] = f.team;
+                if (1..=2).contains(&f.team) {
+                    let l = &mut self.s[f.team as usize];
+                    l.b28[1] += 1;
+                    l.b28[0] += (t - self.last_near[i][3 - f.team as usize] > B28_TAKE_S) as u32;
+                }
+            }
+            if !f.takeable || !(1..=2).contains(&f.team) {
+                continue;
+            }
+            if count(1, f, B28_NEAR_M) + count(2, f, B28_NEAR_M) == 0 {
+                self.s[3 - f.team as usize].b28_empty_s += 1;
+            }
+        }
+        for team in 1..=2u32 {
+            let real = real_presence(alive, fs, team);
+            let l = &mut self.s[team as usize];
+            for (f, n) in fs.iter().zip(real) {
+                if f.team == team && f.takeable {
+                    l.presence[0] += 1;
+                    l.presence[1] += n;
+                    l.presence[2] += (n >= 4) as u32;
+                }
+            }
+        }
+    }
+
+    fn put(&self, team: usize, put: &mut impl FnMut(&str, Option<f64>)) {
+        let l = &self.s[team];
+        put("B35_still_cases", Some(l.b35[1] as f64));
+        put("B35_pct_still_hidden_crouched", pct(l.b35[0], l.b35[1]));
+        let windows: Vec<f32> = self.arrivals.iter().filter(|(k, v)| k.0 == team as u32 && v.0 >= 2).map(|(_, v)| v.1.len() as f32).collect();
+        put("B32_windows", Some(windows.len() as f64));
+        put("B32_sectors_median", median_s(&windows));
+        put("B36_cases", Some(l.b36[1] as f64));
+        put("B36_pct_matched", pct(l.b36[0], l.b36[1]));
+        put("B28_captures", Some(l.b28[1] as f64));
+        put("B28_pct_uncontested", pct(l.b28[0], l.b28[1]));
+        put("B28_enemy_flag_empty_s", Some(l.b28_empty_s as f64));
+        put("presence_mean", (l.presence[0] > 0).then(|| round2(l.presence[1] as f64 / l.presence[0] as f64)));
+        put("presence_pct_4_or_more", pct(l.presence[2], l.presence[0]));
+    }
+}
+
+/// B27: a victim was busy if one of the killer's side other than the killer hurt it in this long before, s, or it was in a vehicle
+/// this long before, s.
+pub const B27_BUSY_S: f64 = 5.0;
+pub const B27_GOT_OFF_S: f64 = 3.0;
+/// B30: a mine is laid where enemy vehicles pass when one with a crew went within this of it, m, in this long before, s; a vehicle
+/// destroyed within [`B30_HIT_M`] of a mine the side laid counts as destroyed by mines, m.
+pub const B30_NEAR_M: f32 = 15.0;
+pub const B30_TRAFFIC_S: f64 = 180.0;
+pub const B30_HIT_M: f32 = 10.0;
+/// B33: an action is announced when its doer said something on the radio within this of it, s.
+pub const B33_SAID_S: f64 = 3.0;
+
+#[derive(Default, Debug, Clone)]
+struct SideSt {
+    /// B27: kills of busy victims, kills
+    b27: [u32; 2],
+    /// B29: boardings of vehicles the enemy drove or that were born on its side
+    b29: u32,
+    /// B30: mines laid where enemy vehicles passed, mines laid; enemy vehicles destroyed by mines
+    b30: [u32; 2],
+    b30_kills: u32,
+    /// B33: streetwise actions announced, actions
+    b33: [u32; 2],
+}
+
+/// The streetwise cards (B27, B29, B30, B33), from the sim's journal: who hurt whom, who boarded what, the mines laid.
+#[derive(Default, Debug)]
+struct Streetwise {
+    s: [SideSt; 3],
+    /// per soldier: the hurts of the last [`B27_BUSY_S`] (when, by which vehicle), and the last time it was in a vehicle
+    hurt: BTreeMap<usize, Vec<(f64, usize)>>,
+    in_vehicle: BTreeMap<usize, f64>,
+    /// per vehicle: the side born on (its team when first seen) and the side of its last driver; per player, the vehicle it was in
+    owner: BTreeMap<usize, (u32, u32)>,
+    inside: BTreeMap<usize, Option<usize>>,
+    /// B30: enemy ground vehicles with a crew, per side that drove them: (when, where); the mines laid: (side, where)
+    traffic: Vec<(f64, u32, [f32; 3])>,
+    mines: Vec<(u32, [f32; 3])>,
+    /// B33: the actions waiting to see whether they are announced: (when, player, side, announced)
+    pending: Vec<(f64, usize, u32, bool)>,
+    /// B33: the messages of the last [`B33_SAID_S`]: (when, player)
+    said: Vec<(f64, usize)>,
+    damage_seen: usize,
+    fired_seen: usize,
+    radio_seen: usize,
+}
+
+impl Streetwise {
+    fn step(&mut self, s: &crate::Sim, t: f64, player_of_soldier: &[Option<usize>]) {
+        let team_of_vehicle = |j: usize| -> Option<u32> {
+            if let Some(k) = player_of_soldier.get(j).copied().flatten() {
+                return Some(s.players[k].team);
+            }
+            let v = s.vehicles.get(j)?;
+            v.entry.occupants.iter().flatten().find_map(|&o| player_of_soldier.get(o).copied().flatten()).map(|k| s.players[k].team)
+        };
+        // B33: what was said lately (an action counts as announced with a message up to 3 s before or after it)
+        let said: Vec<(f64, usize)> = s.journal.radio_log.get(self.radio_seen..).unwrap_or(&[]).iter().map(|e| (e.step as f64 / 30.0, e.player)).collect();
+        self.radio_seen = s.journal.radio_log.len();
+        self.said.extend(said.iter().copied());
+        self.said.retain(|x| t - x.0 <= B33_SAID_S);
+        for x in self.pending.iter_mut() {
+            x.3 |= said.iter().any(|&(w, k)| k == x.1 && (w - x.0).abs() <= B33_SAID_S);
+        }
+        let recent = self.said.clone();
+        let act = |pending: &mut Vec<(f64, usize, u32, bool)>, k: usize, team: u32| pending.push((t, k, team, recent.iter().any(|x| x.1 == k)));
+        // who is in what, and the vehicles' sides
+        for (k, p) in s.players.iter().enumerate() {
+            let Some(sol) = p.soldier.filter(|_| p.alive && (1..=2).contains(&p.team)) else {
+                self.inside.remove(&k);
+                continue;
+            };
+            let now = s.vehicles.get(sol).and_then(|v| v.entry.inside);
+            if now.is_some() {
+                self.in_vehicle.insert(sol, t);
+            }
+            let before = self.inside.insert(k, now).flatten();
+            if let Some(j) = now {
+                let v = &s.vehicles[j];
+                let o = self.owner.entry(j).or_insert((v.team, 0));
+                if before != Some(j) {
+                    // B29: boarding what the enemy drove or what was born on its side
+                    if o.1 == 3 - p.team || (o.1 == 0 && o.0 == 3 - p.team) {
+                        self.s[p.team as usize].b29 += 1;
+                        act(&mut self.pending, k, p.team);
+                    }
+                }
+                if s.vehicles[sol].entry.position == 0 {
+                    o.1 = p.team;
+                }
+            }
+        }
+        // B30: the enemy's ground vehicles with a crew, once a second
+        if s.clock.steps % 30 == 0 {
+            for (j, &(_, drv)) in &self.owner {
+                let Some(v) = s.vehicles.get(*j).filter(|v| !v.removed && !v.has_soldier_contact()) else { continue };
+                if v.entry.occupants.iter().flatten().next().is_some() && !VehicleClass::of(v).flies() && (1..=2).contains(&drv) {
+                    self.traffic.push((t, drv, v.craft.body.pos));
+                }
+            }
+            self.traffic.retain(|x| t - x.0 < B30_TRAFFIC_S);
+        }
+        for f in s.journal.fired.get(self.fired_seen..).unwrap_or(&[]) {
+            let is_mine = f.3.and_then(|i| s.projectiles.get(i)).is_some_and(|p| p.template.name.to_ascii_lowercase().contains("mine"));
+            let Some(k) = player_of_soldier.get(f.1).copied().flatten().filter(|_| is_mine) else { continue };
+            let team = s.players[k].team;
+            if !(1..=2).contains(&team) {
+                continue;
+            }
+            let pos = f.2.pos;
+            let l = &mut self.s[team as usize];
+            l.b30[1] += 1;
+            if self.traffic.iter().any(|x| x.1 == 3 - team && d(x.2, pos) < B30_NEAR_M) {
+                l.b30[0] += 1;
+            }
+            self.mines.push((team, pos));
+            act(&mut self.pending, k, team);
+        }
+        self.fired_seen = s.journal.fired.len();
+        // B27 (and B30's kills): the hurts, and the deaths
+        for e in s.journal.damage_log.get(self.damage_seen..).unwrap_or(&[]) {
+            if e.amount <= 0.0 {
+                continue;
+            }
+            let victim = &s.vehicles[e.vehicle];
+            if victim.has_soldier_contact() {
+                let hurts = self.hurt.entry(e.vehicle).or_default();
+                hurts.retain(|h| t - h.0 < B27_BUSY_S);
+                let before: Vec<(f64, usize)> = hurts.clone();
+                if let Some(by) = e.by {
+                    hurts.push((t, by));
+                }
+                if e.hp > 0.0 {
+                    continue;
+                }
+                let (Some(by), Some(vk)) = (e.by, player_of_soldier.get(e.vehicle).copied().flatten()) else { continue };
+                let vteam = s.players[vk].team;
+                let Some(kteam) = team_of_vehicle(by).filter(|&k| (1..=2).contains(&k) && k != vteam) else { continue };
+                let busy = before.iter().any(|h| h.1 != by && team_of_vehicle(h.1) == Some(kteam)) || self.in_vehicle.get(&e.vehicle).is_some_and(|&w| t - w < B27_GOT_OFF_S && t - w > 0.05);
+                let l = &mut self.s[kteam as usize];
+                l.b27[1] += 1;
+                l.b27[0] += busy as u32;
+                if busy {
+                    let killer = player_of_soldier.get(by).copied().flatten().or_else(|| s.vehicles.get(by)?.entry.occupants.iter().flatten().find_map(|&o| player_of_soldier.get(o).copied().flatten()));
+                    if let Some(k) = killer {
+                        act(&mut self.pending, k, kteam);
+                    }
+                }
+                self.hurt.remove(&e.vehicle);
+            } else if e.hp <= 0.0 && e.status.is_some() {
+                let Some(&(_, drv)) = self.owner.get(&e.vehicle) else { continue };
+                let pos = victim.craft.body.pos;
+                if (1..=2).contains(&drv) && self.mines.iter().any(|m| m.0 == 3 - drv && d(m.1, pos) < B30_HIT_M) {
+                    self.s[(3 - drv) as usize].b30_kills += 1;
+                }
+            }
+        }
+        self.damage_seen = s.journal.damage_log.len();
+        let mut pending = std::mem::take(&mut self.pending);
+        pending.retain(|x| {
+            if t - x.0 < B33_SAID_S {
+                return true;
+            }
+            let l = &mut self.s[x.2 as usize];
+            l.b33[1] += 1;
+            l.b33[0] += x.3 as u32;
+            false
+        });
+        self.pending = pending;
+    }
+
+    fn put(&self, team: usize, put: &mut impl FnMut(&str, Option<f64>)) {
+        let l = &self.s[team];
+        put("B27_kills", Some(l.b27[1] as f64));
+        put("B27_pct_busy_victims", pct(l.b27[0], l.b27[1]));
+        put("B29_enemy_vehicles_boarded", Some(l.b29 as f64));
+        put("B30_mines", Some(l.b30[1] as f64));
+        put("B30_pct_mines_on_traffic", pct(l.b30[0], l.b30[1]));
+        put("B30_vehicles_destroyed_by_mines", Some(l.b30_kills as f64));
+        put("B33_actions", Some(l.b33[1] as f64));
+        put("B33_pct_announced_3s", pct(l.b33[0], l.b33[1]));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1664,6 +2074,68 @@ mod tests {
 
     fn plane(id: usize, x: f32, y: f32) -> V {
         V { id, class: VehicleClass::Plane, seats: 1, occupants: vec![id], pos: [x, y, 0.0], hp: 1.0, alt: y, land_near: false }
+    }
+
+    #[test]
+    fn b35_counts_the_still_cases_only() {
+        let mut m = Meter::new();
+        let mut a = p(0, 1, 0.0, 0.0);
+        a.b35 = Some(true);
+        let mut b = p(1, 1, 5.0, 0.0);
+        b.b35 = Some(false);
+        let c = p(2, 2, 50.0, 0.0);
+        m.sample(1.0, &[a.clone(), b.clone(), c.clone()], &[], &[]);
+        a.b35 = Some(true);
+        m.sample(2.0, &[a, p(1, 1, 5.0, 0.0), c], &[], &[]);
+        let l = side(m, "1");
+        assert_eq!((l["B35_still_cases"].as_f64(), l["B35_pct_still_hidden_crouched"].as_f64()), (Some(3.0), Some(66.7)));
+    }
+
+    #[test]
+    fn b32_distinct_sectors_of_arrival() {
+        let mut m = Meter::new();
+        let f = [flag(0.0, 2)];
+        // 0 comes from the east, 1 from the north, 2 from the east again: two sectors in the window
+        m.sample(1.0, &[p(0, 1, 50.0, 0.0), p(1, 1, 0.0, 50.0), p(2, 1, 60.0, 1.0)], &[], &f);
+        m.sample(2.0, &[p(0, 1, 20.0, 0.0), p(1, 1, 0.0, 20.0), p(2, 1, 25.0, 1.0)], &[], &f);
+        let l = side(m, "1");
+        assert_eq!((l["B32_windows"].as_f64(), l["B32_sectors_median"].as_f64()), (Some(1.0), Some(2.0)));
+    }
+
+    #[test]
+    fn b36_squad_arrival_against_the_defenders() {
+        let mut m = Meter::new();
+        let f = [flag(0.0, 2)];
+        let def = |x| p(9, 2, x, 0.0);
+        let def2 = p(8, 2, 5.0, 5.0);
+        let def3 = p(7, 2, 5.0, -5.0);
+        // two attackers come in together against three defenders, then a third arrives: 3 >= 3, met
+        m.sample(1.0, &[p(0, 1, 100.0, 0.0), p(1, 1, 100.0, 5.0), p(2, 1, 200.0, 0.0), def(0.0), def2.clone(), def3.clone()], &[], &f);
+        m.sample(2.0, &[p(0, 1, 50.0, 0.0), p(1, 1, 50.0, 5.0), p(2, 1, 200.0, 0.0), def(0.0), def2.clone(), def3.clone()], &[], &f);
+        m.sample(3.0, &[p(0, 1, 50.0, 0.0), p(1, 1, 50.0, 5.0), p(2, 1, 50.0, 0.0), def(0.0), def2.clone(), def3.clone()], &[], &f);
+        for t in 4..=25 {
+            m.sample(t as f64, &[p(0, 1, 50.0, 0.0), def(0.0), def2.clone(), def3.clone()], &[], &f);
+        }
+        let l = side(m, "1");
+        assert_eq!((l["B36_cases"].as_f64(), l["B36_pct_matched"].as_f64()), (Some(1.0), Some(100.0)));
+    }
+
+    #[test]
+    fn b28_uncontested_capture_and_empty_flag() {
+        let mut m = Meter::new();
+        m.sample(1.0, &[p(0, 1, 0.0, 0.0), p(1, 2, 500.0, 0.0)], &[], &[flag(0.0, 2), flag(1000.0, 2)]);
+        m.sample(2.0, &[p(0, 1, 0.0, 0.0), p(1, 2, 500.0, 0.0)], &[], &[flag(0.0, 1), flag(1000.0, 2)]);
+        let l = side(m, "1");
+        assert_eq!((l["B28_captures"].as_f64(), l["B28_pct_uncontested"].as_f64()), (Some(1.0), Some(100.0)));
+        // the far enemy flag was empty both seconds
+        assert_eq!(l["B28_enemy_flag_empty_s"], 2.0);
+    }
+
+    #[test]
+    fn real_presence_per_flag() {
+        let ps = [p(0, 1, 0.0, 0.0), p(1, 2, 100.0, 0.0), p(2, 2, 400.0, 0.0)];
+        assert_eq!(real_presence(&ps, &[flag(0.0, 1), flag(400.0, 1)], 1), vec![1, 1]);
+        assert_eq!(real_presence(&ps, &[flag(0.0, 1)], 2), vec![1]);
     }
 
     #[test]
@@ -2066,7 +2538,9 @@ mod tests {
             assert_eq!(cause_b15(m.key, &base), Some(false));
         }
         assert_eq!(cause_b15(r::ROGER.key, &base), None, "an acknowledgement asks for nothing");
-        assert_eq!(cause_b15(r::LOCAL_FIRE_IN_HOLE.key, &base), Some(false), "not in the table: no cause");
+        assert_eq!(cause_b15(r::LOCAL_FIRE_IN_HOLE.key, &base), Some(false), "no explosive in hand: no cause");
+        assert_eq!(cause_b15(r::LOCAL_FIRE_IN_HOLE.key, &ve(|c| c.explosive = true)), Some(true));
+        assert_eq!(cause_b15(r::LOCAL_HOLD_FIRE.key, &base), Some(false), "not in the table: no cause");
     }
 
     #[test]
@@ -2202,6 +2676,10 @@ mod tests {
             }
         }
         assert!(r["B16"]["totals"]["bots seen"].as_f64().unwrap() >= 16.0);
+        // B27: the kills of a minute and a half are seen, with their killer's side
+        let kills: f64 = ["1", "2"].iter().map(|t| r["sides"][*t]["B27_kills"].as_f64().unwrap()).sum();
+        let deaths: u32 = s.players.iter().map(|p| p.deaths).sum();
+        assert!(kills > 0.0 && kills <= deaths as f64, "{kills} kills for {deaths} deaths");
         assert!(r["B16"]["by_side"]["1"]["bots"].as_u64().unwrap() > 0);
         // B17: in a minute and a half of Berlin there are reactions and shots with error measurable
         let reaction: Vec<f64> = ["1", "2"].iter().filter_map(|t| r["sides"][*t]["B17_reaction_s"].as_f64()).collect();

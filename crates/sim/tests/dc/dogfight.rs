@@ -1,4 +1,4 @@
-//! A bots3 pilot against another aircraft in the air. Skipped without the real data.
+//! A bots pilot against another aircraft in the air. Skipped without the real data.
 use bytefield_sim::damage::Status;
 use bytefield_sim::soldier::axis;
 
@@ -10,14 +10,14 @@ fn dot(a: V3, b: V3) -> f32 {
 
 /// B26: a fighter with an enemy plane flying straight and level 500 m ahead of it goes after it, gets behind it and shoots it down
 /// with its cannon, without help and without hitting the ground. The target is flown from outside with a player's stick and never
-/// fires; the fighter is a bots3 mind sat in its seat.
+/// fires; the fighter is a bots mind sat in its seat.
 #[test]
-fn a_bots3_fighter_shoots_down_a_plane_flying_straight() {
+fn a_bots_fighter_shoots_down_a_plane_flying_straight() {
     for (m, w) in crate::support::dc_worlds("DC_No_Fly_Zone", "conquest") {
         let mut s = bytefield_sim::Sim::new(&w, 1.0 / 30.0);
         s.round.playing = true;
         s.start_conquest();
-        s.set_minds(1, bytefield_sim::bots3::maker(&w.level.name, 1));
+        s.set_minds(1, bytefield_sim::bots::maker(&w.level.name, 1));
         let (ka, kb) = (s.join(1, true), s.join(2, true));
         let mut soldiers = None;
         for _ in 0..900 {
@@ -52,7 +52,7 @@ fn a_bots3_fighter_shoots_down_a_plane_flying_straight() {
             let k = (45.0 / speed.max(20.0)).powi(2).clamp(0.3, 3.0);
             let pitch = k * (0.05 * (want - f[1].clamp(-1.0, 1.0).asin().to_degrees()) - 0.02 * rates[0]);
             let bank = k * (0.02 * r[1].atan2(u[1]).to_degrees() - 0.006 * rates[1]);
-            s.vehicles[sb].movement.as_mut().unwrap().set_input(&[(axis::THROTTLE, (0.6 + 0.05 * (90.0 - speed)).clamp(0.0, 1.0)), (1, -pitch.clamp(-1.0, 1.0)), (2, bank.clamp(-1.0, 1.0))]);
+            s.vehicles[sb].soldier_mut().unwrap().set_input(&[(axis::THROTTLE, (0.6 + 0.05 * (90.0 - speed)).clamp(0.0, 1.0)), (1, -pitch.clamp(-1.0, 1.0)), (2, bank.clamp(-1.0, 1.0))]);
             s.step();
             fired += s.journal.fired.iter().rev().take_while(|e| e.0 == s.clock.steps).filter(|e| e.1 == ca).count();
             for e in &s.journal.damage_log[seen..] {

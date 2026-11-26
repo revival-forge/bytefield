@@ -22,7 +22,7 @@ pub struct EnvMap {
 }
 
 /// The original's fixed-function light ([`crate::level::Atmosphere::fixed`], gamma): ambient, sun colour, the direction towards the sun
-/// (the ambient's w: 1 with this light, 0 with Bevy's; the sun's: 1 with the reflection, 0 without it; the diffuse's: 1 blended in gamma).
+/// (the ambient's w: 1 with this light, 0 with Bevy's, −1 unlit; the sun's: 1 with the reflection, 0 without it; the diffuse's: 1 blended in gamma).
 #[derive(Clone, Copy, Debug, Default, Reflect, bevy::render::render_resource::ShaderType)]
 pub struct FixedLight {
     pub ambient: Vec4,
@@ -129,7 +129,7 @@ pub fn swap(
         }
     }
     *was = Some(now);
-    if !now.0 && !now.1 {
+    if !now.0 && !now.1 && !now.2 {
         return;
     }
     // (without a cube, a blank one: only the light is used)
@@ -139,7 +139,10 @@ pub fn swap(
         let reflect = now.0 && cache.envmapped.contains(&mat.id());
         let diffuse = cache.lit.get(&mat.id()).copied();
         let fixed = now.1 && diffuse.is_some();
-        if !reflect && !fixed {
+        // (an unlit blended one only to blend it in gamma: the Mi-24's blurred rotor, its dark blades at an alpha of ~0.1–0.3
+        // over the sand, nearly vanished blended in linear light, and showed in the original)
+        let plain = now.2 && cache.unlit_blended.contains(&mat.id());
+        if !reflect && !fixed && !plain {
             continue;
         }
         let Some(base) = standard.get(&mat) else { continue };
@@ -153,7 +156,8 @@ pub fn swap(
         let md = if is_arms { Vec3::ONE } else { diffuse.unwrap_or(Vec3::ONE) };
         let ambient = if is_arms { Vec3::splat(ARMS_AMBIENT) } else { cube.light.ambient.truncate() };
         // (ambient.w 2: a skinned one, whose TF scales the sun's colour too: `c7` = diffuse × skin factor)
-        let light = FixedLight { ambient: ambient.extend(if fixed && is_arms { 2.0 } else { flag(fixed) }), sun: cube.light.sun.truncate().extend(flag(reflect)), diffuse: (cube.light.diffuse.truncate() * md).extend(flag(gamma)) };
+        // (ambient.w −1: unlit, its texture as it is)
+        let light = FixedLight { ambient: ambient.extend(if plain { -1.0 } else if fixed && is_arms { 2.0 } else { flag(fixed) }), sun: cube.light.sun.truncate().extend(flag(reflect)), diffuse: (cube.light.diffuse.truncate() * md).extend(flag(gamma)) };
         let h = cube.made.entry((mat.id(), reflect, fixed, gamma, is_arms)).or_insert_with(|| env.add(EnvMapMaterial { base: base.clone(), extension: EnvMap { cube: image.clone(), light } })).clone();
         commands.entity(e).remove::<MeshMaterial3d<StandardMaterial>>().insert((MeshMaterial3d(h), Reflecting(mat)));
     }

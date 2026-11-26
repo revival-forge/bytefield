@@ -16,7 +16,7 @@ fn the_space_rocket_is_a_projectile() {
         let soldier = s.spawn_vehicle("USSoldier", [x, y, z + 3.0], [0.0; 3]).unwrap();
         s.vehicles[soldier].team = 1;
         s.enter(soldier, l, 0);
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0), (bytefield_sim::soldier::axis::ALT_FIRE, 1.0)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0), (bytefield_sim::soldier::axis::ALT_FIRE, 1.0)]);
         for _ in 0..90 {
             s.step();
         }

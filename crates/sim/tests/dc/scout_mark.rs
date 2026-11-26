@@ -19,7 +19,7 @@ fn the_binoculars_of_a_dc_kit_mark_too() {
     let sol = s.spawn_vehicle("USSoldier", [x, y, z], [0.0; 3]).unwrap();
     s.vehicles[sol].team = 2;
     assert!(s.vehicles[sol].give_kit(w.kit_weapons("Us_Assault"), Some("Binoculars")));
-    s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
+    s.vehicles[sol].soldier_mut().unwrap().has_player = true;
     for _ in 0..30 {
         s.step();
     }

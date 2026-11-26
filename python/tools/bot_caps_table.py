@@ -138,7 +138,7 @@ def capabilities(caps):
         print(f"| {name} | {what} | " + " | ".join("; ".join(f"{caps[m][k]:.0f}" for k in keys) for m in MINDS) + " |")
 
 
-# What bots2 must do before it can be the default: the same things as the others, however badly. Summed over the rounds of the census.
+# What the bots must do: the same things as the others, however badly. Summed over the rounds of the census.
 GATES = [
     ("tank: drives, fires and kills", lambda r, f, s: r["tank"]["path_m"] >= 1000 and r["tank"]["shots"] >= 10 and r["tank"]["kills"] >= 1),
     ("car: drives", lambda r, f, s: r["car"]["path_m"] >= 1000),

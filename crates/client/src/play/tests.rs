@@ -63,7 +63,7 @@ pub(crate) mod with_data {
         let (ske, _) = d.track.clone().expect("its skeleton");
         let file = Arc::new(bytefield_formats::anim::Skeleton::parse(&w.vfs.read(&ske).unwrap()).unwrap());
         let skins = skin::load(&w.vfs, &d.file, d.skin.as_deref().unwrap(), &file, false).expect("all of it hangs from that skeleton");
-        let machine = &v.movement.as_ref().unwrap().machine;
+        let machine = &v.soldier().unwrap().machine;
         let top = |abs: &[bytefield_sim::skeleton::M4]| skins.iter().flat_map(|s| skin::positions(s, abs)).map(|p| p[1]).fold(f32::MIN, f32::max);
         let mut chute = skin::Chute::new(file);
         let shut = top(chute.advance(machine, 1.0));
@@ -90,7 +90,7 @@ pub(crate) mod with_data {
             }
             let a = axes(&h, &before);
             if let Some(i) = sim.players[p].soldier
-                && let Some(m) = sim.vehicles[i].movement.as_mut()
+                && let Some(m) = sim.vehicles[i].soldier_mut()
             {
                 m.set_input(&a);
             }
@@ -126,7 +126,7 @@ pub(crate) mod with_data {
         let s = sim.players[0].soldier.unwrap();
         let view = |sim: &Sim, look: [f32; 2]| {
             let v = &sim.vehicles[s];
-            v.movement.as_ref().unwrap().view(&v.craft.body, look).0
+            v.soldier().unwrap().view(&v.craft.body, look).0
         };
         let angle = |a: [f32; 3], b: [f32; 3]| (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]).clamp(-1.0, 1.0).acos().to_degrees();
         let mut before = Held::default();
@@ -135,7 +135,7 @@ pub(crate) mod with_data {
             let predicted = view(&sim, look);
             let h = Held { keys: HashSet::new(), mouse: Vec2::from(look) };
             let a = axes(&h, &before);
-            sim.vehicles[s].movement.as_mut().unwrap().set_input(&a);
+            sim.vehicles[s].soldier_mut().unwrap().set_input(&a);
             before = h;
             sim.step();
             let after = view(&sim, [0.0, 0.0]);
@@ -155,7 +155,7 @@ pub(crate) mod with_data {
         let Some(w) = world("El_Alamein") else { return };
         let sim = run(w, 2, "", 150);
         let s = &sim.vehicles[sim.players[0].soldier.unwrap()];
-        let m = s.movement.as_ref().unwrap();
+        let m = s.soldier().unwrap();
         let name = &m.weapon.as_ref().expect("a weapon").template.name;
         let model = weapon::load(&w.db, &w.vfs, name).expect("its model");
         let sk = m.posed_skeleton().unwrap();
@@ -184,14 +184,14 @@ pub(crate) mod with_data {
         let Some(w) = world("El_Alamein") else { return };
         let mut sim = run(w, 2, "40:lmb", 41);
         let s = sim.players[0].soldier.unwrap();
-        let name = sim.vehicles[s].movement.as_ref().unwrap().weapon.as_ref().unwrap().template.name.clone();
+        let name = sim.vehicles[s].soldier().unwrap().weapon.as_ref().unwrap().template.name.clone();
         let model = weapon::load(&w.db, &w.vfs, &name).unwrap();
         let still = model.bones(&bytefield_sim::skeleton::IDENTITY, &model.rel(None));
         let mut moved = 0.0f32;
         let mut animated = false;
         for _ in 0..90 {
             sim.step();
-            let m = sim.vehicles[s].movement.as_ref().unwrap();
+            let m = sim.vehicles[s].soldier().unwrap();
             let Some(a) = weapon_animation(m) else { continue };
             animated = true;
             let now = model.bones(&bytefield_sim::skeleton::IDENTITY, &model.rel(Some(a)));
@@ -268,7 +268,7 @@ pub(crate) mod with_data {
             }
             let a = axes(&h, &before);
             if let Some(i) = sim.players[p].soldier
-                && let Some(m) = sim.vehicles[i].movement.as_mut()
+                && let Some(m) = sim.vehicles[i].soldier_mut()
             {
                 m.set_input(&a);
             }
@@ -304,7 +304,7 @@ mod skin_data {
         for _ in 0..3 {
             sim.step();
         }
-        let m = sim.vehicles[i].movement.as_ref().unwrap();
+        let m = sim.vehicles[i].soldier().unwrap();
         let sk = m.posed_skeleton().unwrap();
         let skins = skin::load(&w.vfs, "GerBody", "animations/GerBody.skn", &sk.file, false).expect("skin");
         let mut mesh = Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());

@@ -98,7 +98,7 @@ folder; `bytefield-content list` shows what there is.
 ## 6. Graphics
 
 **OPTIONS → VIDEO → quality**: *Original* looks like the 2002 game; *Enhanced* adds better filtering, antialiasing,
-shadows and reflections. Each setting can be changed on its own. **EXPERIMENTAL** holds effects that are still being
+shadows, reflections, shadows of clouds, heat shimmer and some grass. Each setting can be changed on its own. **EXPERIMENTAL** holds effects that are still being
 tried. What each does: [features.md](features.md#graphics-what-is-drawn-and-how).
 
 ## 7. Playing with friends

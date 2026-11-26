@@ -43,7 +43,7 @@ fn main() {
     for i in 0..((seconds + 1.0) / DT) as usize {
         // one press of the alt-fire at step 5, then released
         let keys: &[(usize, f32)] = if i == 5 { &[(axis::THROTTLE, 1.0), (axis::ALT_FIRE, 1.0)] } else { &[(axis::THROTTLE, 1.0)] };
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(keys);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(keys);
         if rails {
             let b = &mut s.vehicles[craft].craft.body;
             b.rows = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];

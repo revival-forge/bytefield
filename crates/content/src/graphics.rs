@@ -104,10 +104,16 @@ pub struct Overrides {
     pub fixed_light: Option<bool>,
     pub water_gamma: Option<bool>,
     pub mesh_shade: Option<bool>,
+    pub grass: Option<f32>,
+    pub clouds: Option<f32>,
+    pub decals: Option<bool>,
+    pub heat: Option<bool>,
+    pub relief: Option<f32>,
+    pub aerial: Option<f32>,
 }
 
 /// The loose settings' keys, in the order they are written.
-pub const KEYS: &[&str] = &["aniso", "max_texture", "mip_bias", "shadows", "shadow_quality", "aa", "sharpen", "reflections", "coverage", "bloom", "look", "vignette", "view_distance", "motion_blur", "ssao", "contact_shadows", "soft_particles", "dof", "render_scale", "water_fx", "dyn_lights", "oit", "lightmaps", "object_shadows", "envmap", "fixed_light", "water_gamma", "mesh_shade"];
+pub const KEYS: &[&str] = &["aniso", "max_texture", "mip_bias", "shadows", "shadow_quality", "aa", "sharpen", "reflections", "coverage", "bloom", "look", "vignette", "view_distance", "motion_blur", "ssao", "contact_shadows", "soft_particles", "dof", "render_scale", "water_fx", "dyn_lights", "oit", "lightmaps", "object_shadows", "envmap", "fixed_light", "water_gamma", "mesh_shade", "grass", "clouds", "decals", "heat", "relief", "aerial"];
 
 impl Overrides {
     /// Sets `key` from its text (`-` clears it). Err: not a key, or not one of its values.
@@ -150,6 +156,12 @@ impl Overrides {
             "fixed_light" => put!(fixed_light, parse_bool(v).ok_or_else(bad)?),
             "water_gamma" => put!(water_gamma, parse_bool(v).ok_or_else(bad)?),
             "mesh_shade" => put!(mesh_shade, parse_bool(v).ok_or_else(bad)?),
+            "grass" => put!(grass, num(0.0, 1.0)?),
+            "clouds" => put!(clouds, num(0.0, 1.0)?),
+            "decals" => put!(decals, parse_bool(v).ok_or_else(bad)?),
+            "heat" => put!(heat, parse_bool(v).ok_or_else(bad)?),
+            "relief" => put!(relief, num(0.0, 1.0)?),
+            "aerial" => put!(aerial, num(0.0, 1.0)?),
             _ => return Err(format!("{key}: one of {}", KEYS.join(", "))),
         }
         Ok(())
@@ -187,6 +199,12 @@ impl Overrides {
             self.fixed_light.map(b),
             self.water_gamma.map(b),
             self.mesh_shade.map(b),
+            self.grass.map(|x| x.to_string()),
+            self.clouds.map(|x| x.to_string()),
+            self.decals.map(b),
+            self.heat.map(b),
+            self.relief.map(|x| x.to_string()),
+            self.aerial.map(|x| x.to_string()),
         ];
         KEYS.iter().zip(all).filter_map(|(k, v)| Some((*k, v?))).collect()
     }
@@ -197,7 +215,7 @@ impl Overrides {
         macro_rules! drop_same {
             ($($f:ident),+) => { $(if self.$f == Some(base.$f) { self.$f = None; })+ };
         }
-        drop_same!(aniso, max_texture, mip_bias, shadows, shadow_quality, aa, sharpen, reflections, coverage, bloom, look, vignette, view_distance, motion_blur, ssao, contact_shadows, soft_particles, dof, render_scale, water_fx, dyn_lights, oit, lightmaps, object_shadows, envmap, fixed_light, water_gamma, mesh_shade);
+        drop_same!(aniso, max_texture, mip_bias, shadows, shadow_quality, aa, sharpen, reflections, coverage, bloom, look, vignette, view_distance, motion_blur, ssao, contact_shadows, soft_particles, dof, render_scale, water_fx, dyn_lights, oit, lightmaps, object_shadows, envmap, fixed_light, water_gamma, mesh_shade, grass, clouds, decals, heat, relief, aerial);
         self
     }
 }
@@ -265,6 +283,19 @@ pub struct Graphics {
     /// Vehicles, soldiers and small statics darkened in the terrain's baked shadow as the original does (its
     /// TEXTUREFACTOR; with `fixed_light`)
     pub mesh_shade: bool,
+    /// procedural grass on the terrain's green near the eye (not in the original), its density 0–1; 0 is off
+    pub grass: f32,
+    /// the shadows of clouds drifting over the ground (not in the original), how dark they are 0–1; 0 is off
+    pub clouds: f32,
+    /// marks of hits and blasts left on the ground and the walls (not in the original)
+    pub decals: bool,
+    /// the air shimmering over running engines and blasts (not in the original)
+    pub heat: bool,
+    /// the terrain's detail lit by the sun as a relief, a little over the baked tiles (not in the original), 0–1; 0 is off
+    pub relief: f32,
+    /// aerial perspective (not in the original): a little haze before the fog starts and the sun's light scattered in it
+    /// towards the sun, both gone where the original's fog is whole, 0–1; 0 is off
+    pub aerial: f32,
 }
 
 impl Graphics {
@@ -307,10 +338,16 @@ impl Graphics {
                 fixed_light: true,
                 water_gamma: true,
                 mesh_shade: true,
+                grass: 0.0,
+                clouds: 0.0,
+                decals: false,
+                heat: false,
+                relief: 0.0,
+                aerial: 0.0,
             },
             // (its post-process: SMAA, no CAS. With `water_gamma`, blended in linear space:
             // the shallow water came out as a light sheet with straight edges, Wake and Iwo Jima)
-            Profile::Enhanced => Graphics { profile, aniso: 16, max_texture: 4096, mip_bias: -1.0, shadows: true, aa: Aa::Smaa, reflections: true, coverage: true, object_shadows: false, fixed_light: false, mesh_shade: false, ..Graphics::of(Profile::Original, &Overrides::default()) },
+            Profile::Enhanced => Graphics { profile, aniso: 16, max_texture: 4096, mip_bias: -1.0, shadows: true, aa: Aa::Smaa, reflections: true, coverage: true, object_shadows: false, fixed_light: false, mesh_shade: false, clouds: 0.5, heat: true, grass: 0.5, relief: 0.5, aerial: 0.5, ..Graphics::of(Profile::Original, &Overrides::default()) },
         };
         Graphics {
             profile,
@@ -342,6 +379,12 @@ impl Graphics {
             fixed_light: o.fixed_light.unwrap_or(base.fixed_light),
             water_gamma: o.water_gamma.unwrap_or(base.water_gamma),
             mesh_shade: o.mesh_shade.unwrap_or(base.mesh_shade),
+            grass: o.grass.unwrap_or(base.grass).clamp(0.0, 1.0),
+            clouds: o.clouds.unwrap_or(base.clouds).clamp(0.0, 1.0),
+            decals: o.decals.unwrap_or(base.decals),
+            heat: o.heat.unwrap_or(base.heat),
+            relief: o.relief.unwrap_or(base.relief).clamp(0.0, 1.0),
+            aerial: o.aerial.unwrap_or(base.aerial).clamp(0.0, 1.0),
         }
     }
 
@@ -360,7 +403,7 @@ impl Graphics {
     pub fn describe(&self) -> String {
         let on = |b: bool| if b { "on" } else { "off" };
         format!(
-            "{} (aniso {}x, textures up to {}, mip bias {}, shadows {} {}, aa {}, sharpen {}, reflections {}, coverage {}, bloom {}, look {}, vignette {}, view distance {}, motion blur {}, ssao {}, contact shadows {}, soft particles {}, dof {}, render scale {}, water fx {}, dynamic lights {}, oit {}, lightmaps {}, object shadows {}, envmap {}, fixed light {})",
+            "{} (aniso {}x, textures up to {}, mip bias {}, shadows {} {}, aa {}, sharpen {}, reflections {}, coverage {}, bloom {}, look {}, vignette {}, view distance {}, motion blur {}, ssao {}, contact shadows {}, soft particles {}, dof {}, render scale {}, water fx {}, dynamic lights {}, oit {}, lightmaps {}, object shadows {}, envmap {}, fixed light {}, grass {}, clouds {}, decals {}, heat {}, relief {}, aerial {})",
             self.profile.name(),
             self.aniso,
             self.max_texture,
@@ -387,7 +430,13 @@ impl Graphics {
             on(self.lightmaps),
             on(self.object_shadows),
             on(self.envmap),
-            on(self.fixed_light)
+            on(self.fixed_light),
+            self.grass,
+            self.clouds,
+            on(self.decals),
+            on(self.heat),
+            self.relief,
+            self.aerial
         )
     }
 }
@@ -418,6 +467,11 @@ mod tests {
         assert_eq!((g.aniso, g.max_texture, g.mip_bias, g.shadows, g.shadow_quality), (4, 4096, -1.0, true, ShadowQuality::Medium));
         let g = Graphics::of(Profile::Enhanced, &Overrides { shadows: Some(false), ..Default::default() });
         assert!(!g.shadows);
+        // what Enhanced has of the EXPERIMENTAL page (relief and aerial at half: at their most they are too strong), and what stays there: soft particles and dynamic lights (exaggerated) and the decals
+        // (without soft particles they light the depth prepass on their own, which costs ~10 % on a discrete GPU in the densest scene)
+        let g = Graphics::of(Profile::Enhanced, &Overrides::default());
+        assert_eq!((g.clouds, g.grass, g.heat, g.decals, g.relief, g.aerial), (0.5, 0.5, true, false, 0.5, 0.5));
+        assert!(!g.soft_particles && !g.dyn_lights);
         let mut o = Overrides::default();
         o.set("aa", "FXAA").unwrap();
         o.set("sharpen", "2").unwrap();
@@ -432,7 +486,7 @@ mod tests {
     #[test]
     fn every_key_there_and_back() {
         let mut o = Overrides::default();
-        for (k, v) in KEYS.iter().zip(["8", "1024", "-0.5", "1", "high", "taa", "0.3", "1", "1", "0.2", "vivid", "0.4", "1.5", "0.5", "1", "1", "1", "1", "0.75", "1", "1", "1", "0", "0", "0", "0", "1", "0"]) {
+        for (k, v) in KEYS.iter().zip(["8", "1024", "-0.5", "1", "high", "taa", "0.3", "1", "1", "0.2", "vivid", "0.4", "1.5", "0.5", "1", "1", "1", "1", "0.75", "1", "1", "1", "0", "0", "0", "0", "1", "0", "0.5", "0.5", "1", "1", "0.5", "1"]) {
             o.set(k, v).unwrap();
         }
         let e = o.entries();

@@ -1,6 +1,6 @@
 // An effect's sprite (`effects.rs`): Bevy's unlit path, and with soft particles its alpha fades
 // where it nears what the depth prepass shows behind it, over half the sprite's size (`uv_b.x`); with no
-// prepass on the view (the arms', the mirror's) or the setting off (`soft.x` 0), as before.
+// prepass on the view (the arms', the mirror's) or the setting off (`soft.x` 0), as before. `soft.y` 1: additive.
 import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
@@ -41,6 +41,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     @if(MATERIAL_OIT_ENABLED) {
         oit_draw(in.position, vec4(out.color.rgb * out.color.a, out.color.a));
         discard;
+    }
+    // (an additive one, `soft.y` 1: premultiplied with no alpha, so it adds colour × alpha to what is behind; with OIT, blended)
+    if soft.y > 0.5 {
+        out.color = vec4(out.color.rgb * out.color.a, 0.0);
     }
     return out;
 }

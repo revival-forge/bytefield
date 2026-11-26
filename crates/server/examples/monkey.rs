@@ -110,7 +110,7 @@ fn choose(m: &mut Monkey, s: &mut Sim, r: &mut Rng, hostile: bool, st: &mut Stat
         80..=91 => {
             // into a vehicle: the nearest free, or any, in any free seat (as a script's `seek`: walking there is the bots' path)
             if let Some(i) = soldier.filter(|&i| s.vehicles[i].entry.inside.is_none() && s.vehicles[i].in_world()) {
-                let free: Vec<usize> = s.vehicles.iter().enumerate().filter(|(n, v)| *n != i && v.in_world() && v.movement.is_none() && !v.armor.as_ref().is_some_and(|a| a.destroyed) && v.entry.occupants.iter().any(|o| o.is_none())).map(|(n, _)| n).collect();
+                let free: Vec<usize> = s.vehicles.iter().enumerate().filter(|(n, v)| *n != i && v.in_world() && v.soldier().is_none() && !v.armor.as_ref().is_some_and(|a| a.destroyed) && v.entry.occupants.iter().any(|o| o.is_none())).map(|(n, _)| n).collect();
                 if !free.is_empty() {
                     let at = s.vehicles[i].craft.body.pos;
                     let d = |n: usize| (0..3).map(|j| (s.vehicles[n].craft.body.pos[j] - at[j]).powi(2)).sum::<f32>();

@@ -1,0 +1,4 @@
+# Desert Combat's layer of the bots' named parameters (any map whose name starts with DC_), over the global layer. Built into the
+# binary. Empty until the learning loop has a tuned set for this mod.
+about = "DC_Final layer: nothing tuned yet"
+[params]

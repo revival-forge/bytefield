@@ -64,6 +64,9 @@ pub struct Seat {
     /// where the occupant rides: its `SeatObject` (None: the PlayerControlObject's own place,
     /// the T34's)
     pub ride: V3,
+    /// that `SeatObject` shows its soldier (its `seatFlags`): he can be shot there ([`SeatShow`])
+    #[serde(default)]
+    pub show: Option<SeatShow>,
     /// its PlayerControlObject's template (an AI object when it has an `aiTemplate`)
     pub pco: String,
     /// `hasRestrictedExit`: the way out must be clear ([`crate::Sim::exit_place`]); then its
@@ -82,6 +85,44 @@ pub struct Seat {
     /// (`crate::sonar`), and the sonars ping there as with `subPos`
     #[serde(default)]
     pub sonar: bool,
+}
+
+/// How a seat shows its soldier, from its `SeatObject`'s `seatFlags` (a flag name the game does not know adds nothing): half body,
+/// whole body, head, standing or outside, and the two animation states he is posed with there (`seatAnimationLowerBody`,
+/// `seatAnimationUpperBody`; by default sitting, or standing with `c_SeatShowStandingSoldier`).
+///
+/// Level 3: a soldier on such a seat can be shot ([`crate::projectile::Projectile::collide`]), posed as the seat shows him
+/// ([`crate::soldier::Movement::posed_skeleton_seated`]) at its place with the vehicle's axes. The original server reads no seat
+/// flag and takes the soldier out of the physics when he gets in (`disablePhysicsOnSoldier`); how its rounds still reach an
+/// exposed gunner has not been traced. Players of the original remember shooting them; a soldier inside the hull stays out of
+/// reach, as before.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct SeatShow {
+    pub lower: String,
+    pub upper: String,
+    /// `c_SeatShowHalfBodySoldier`: the legs folded onto the pelvis
+    pub half_body: bool,
+}
+
+impl SeatShow {
+    fn of(c: &Component) -> Option<SeatShow> {
+        let flags: Vec<String> = match c.param("seatFlags") {
+            Some(Value::List(a)) => a.iter().map(|f| f.trim().to_ascii_lowercase()).collect(),
+            Some(Value::Text(t)) => vec![t.trim().to_ascii_lowercase()],
+            _ => Vec::new(),
+        };
+        let flag = |n: &str| flags.iter().any(|f| f == n);
+        let standing = flag("c_seatshowstandingsoldier");
+        let half_body = flag("c_seatshowhalfbodysoldier");
+        if !(standing || half_body || flag("c_seatshowfullbodysoldier") || flag("c_seatshowheadofsoldier") || flag("c_seatisoutside")) {
+            return None;
+        }
+        let anim = |key: &str, default: &str| match c.param(key) {
+            Some(Value::Text(t)) => t.trim().to_string(),
+            _ => default.to_string(),
+        };
+        Some(SeatShow { lower: anim("seatAnimationLowerBody", if standing { "Lb_StandInVehicle" } else { "Lb_SitInVehicle" }), upper: anim("seatAnimationUpperBody", "Ub_SitInVehicle"), half_body })
+    }
 }
 
 /// An object its spawner looks after: left
@@ -181,7 +222,7 @@ impl Entry {
 /// PlayerControlObjects below it (their place and axes); not looking into those.
 struct Found {
     entries: Vec<EntryPoint>,
-    rides: Vec<V3>,
+    rides: Vec<(V3, Option<SeatShow>)>,
     pcos: Vec<(V3, M3, Component)>,
 }
 
@@ -200,7 +241,7 @@ fn walk(c: &Component, at: V3, rows: M3, out: &mut Found) {
             out.entries.push(EntryPoint { pos, radius });
         }
         if k.kind.eq_ignore_ascii_case("SeatObject") {
-            out.rides.push(pos);
+            out.rides.push((pos, SeatShow::of(k)));
         }
         walk(k, pos, r, out);
     }
@@ -227,7 +268,7 @@ fn seat_of(c: &Component, at: V3, rows: M3, out: &mut Vec<Seat>) {
     });
     let art = c.param("artPos").and_then(Value::number).is_some_and(|v| v != 0.0);
     let sonar = c.param("sonarPos").and_then(Value::number).is_some_and(|v| v != 0.0);
-    out.push(Seat { entries: f.entries, exit, exit_speed_mod, ride: c.seat_rank().and_then(|k| f.rides.get(k).copied()).unwrap_or(at), pco: c.name.clone(), restricted, hatch, art, sonar });
+    out.push(Seat { entries: f.entries, exit, exit_speed_mod, ride: c.seat_rank().and_then(|k| f.rides.get(k)).map_or(at, |r| r.0), show: c.seat_rank().and_then(|k| f.rides.get(k)).and_then(|r| r.1.clone()), pco: c.name.clone(), restricted, hatch, art, sonar });
     for (p, r, k) in &f.pcos {
         seat_of(k, *p, *r, out);
     }
@@ -287,7 +328,7 @@ impl crate::Sim<'_> {
     pub fn entry_step(&mut self, i: usize) {
         let now = self.clock.time;
         let v = &self.vehicles[i];
-        let Some(m) = v.movement.as_ref().filter(|m| m.has_player && m.driven && !v.removed) else { return };
+        let Some(m) = v.soldier().filter(|m| m.has_player && m.driven && !v.removed) else { return };
         let pressed = |a: usize| m.input.mapped(a) && m.input.get(a) > PRESSED;
         // in a vehicle, `c_PIMenuSelect1..9` (14..22) pick a seat (the first one held); a seat
         // asked of a bot is taken once it is free
@@ -305,7 +346,7 @@ impl crate::Sim<'_> {
             }
         }
         let v = &self.vehicles[i];
-        let Some(m) = v.movement.as_ref() else { return };
+        let Some(m) = v.soldier() else { return };
         let pressed = |a: usize| m.input.mapped(a) && m.input.get(a) > PRESSED;
         if !pressed(USE) {
             return;
@@ -345,7 +386,7 @@ impl crate::Sim<'_> {
             .entry
             .occupants
             .iter()
-            .map(|o| o.and_then(|d| self.vehicles[d].movement.as_ref()).map(|m| (m.input.clone(), m.input_index)))
+            .map(|o| o.and_then(|d| self.vehicles[d].soldier()).map(|m| (m.input.clone(), m.input_index)))
             .collect();
         let c = &mut self.vehicles[k].craft;
         // (an empty seat keeps what it has: nothing, or a test's forced input)
@@ -568,6 +609,13 @@ impl crate::Sim<'_> {
                 }
             }
         }
+        // on a seat that shows him he can be shot, posed as he is shown (level 3, [`SeatShow`])
+        if let Some(show) = self.vehicles[vehicle].entry.seats.get(seat).and_then(|s| s.show.clone())
+            && let Some(m) = self.vehicles[soldier].soldier_mut()
+            && let Some(sk) = m.posed_skeleton_seated(&show.lower, &show.upper, show.half_body, 0.0)
+        {
+            m.skeleton = Some(sk);
+        }
         self.ride();
     }
 
@@ -700,7 +748,7 @@ impl crate::Sim<'_> {
         });
         hits_obstacle
             || self.vehicles.iter().enumerate().any(|(j, v)| {
-                j != skip && v.in_world() && v.movement.is_none() && segment_near_sphere(start, dir, v.craft.body.pos, v.radius + 1.0) && !crate::projectile::mover_segment(v, start, dir).is_empty()
+                j != skip && v.in_world() && v.soldier().is_none() && segment_near_sphere(start, dir, v.craft.body.pos, v.radius + 1.0) && !crate::projectile::mover_segment(v, start, dir).is_empty()
             })
     }
 
@@ -782,7 +830,7 @@ impl crate::Sim<'_> {
                 let near = |p: V3| (0..3).map(|i| (p[i] - pos[i]).powi(2)).sum::<f32>();
                 let occupied = v.entry.occupants.iter().any(|o| o.is_some());
                 let player_near = self.vehicles.iter().any(|s| {
-                    !s.removed && s.entry.inside.is_none() && s.movement.as_ref().is_some_and(|m| m.has_player) && near(s.craft.body.pos) < r * r
+                    !s.removed && s.entry.inside.is_none() && s.soldier().is_some_and(|m| m.has_player) && near(s.craft.body.pos) < r * r
                 });
                 if occupied || player_near || near(a.spawner).sqrt() <= a.distance {
                     self.vehicles[k].entry.abandon.as_mut().unwrap().timer = a.ttl;
@@ -998,7 +1046,7 @@ mod guided {
         let soldier = s.spawn_vehicle("GermanSoldier", [x, y, z + 3.0], [0.0; 3]).unwrap();
         s.vehicles[soldier].team = 1;
         s.enter(soldier, l, 0);
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
         let n = s.vehicles.len();
         for _ in 0..10 {
             s.step();
@@ -1011,7 +1059,7 @@ mod guided {
         assert_eq!(s.vehicles[l].entry.driver, None);
         assert!(s.vehicles[r].entry.destroy_on_exit);
         // full throttle: the fuel runs out (0.00084 a frame at rpm 1)
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::THROTTLE, 1.0)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::THROTTLE, 1.0)]);
         let heat = |s: &crate::Sim| s.vehicles[r].craft.parts.iter().find_map(|p| if let crate::craft::Kind::Engine(e) = &p.kind { Some((e.heat, e.burnt)) } else { None }).unwrap();
         s.step();
         assert!(heat(&s).0 > 0.0);
@@ -1033,12 +1081,12 @@ mod guided {
         let soldier = s.spawn_vehicle("GermanSoldier", [x, y, z + 3.0], [0.0; 3]).unwrap();
         s.vehicles[soldier].team = 1;
         s.enter(soldier, l2, 0);
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
         let n = s.vehicles.len();
         for _ in 0..10 {
             s.step();
         }
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::ALT_FIRE, 1.0)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::ALT_FIRE, 1.0)]);
         for _ in 0..10 {
             s.step();
         }
@@ -1062,7 +1110,7 @@ mod guided {
             let soldier = s.spawn_vehicle("USSoldier", [x, y, z + 3.0], [0.0; 3]).unwrap();
             s.vehicles[soldier].team = 2;
             s.enter(soldier, l, seat);
-            s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 1.0), (axis::ALT_FIRE, 1.0)]);
+            s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 1.0), (axis::ALT_FIRE, 1.0)]);
             let n = s.vehicles.len();
             for _ in 0..30 {
                 s.step();
@@ -1081,7 +1129,7 @@ mod guided {
             assert!((speed - forward_mod).abs() < 0.01 && (b.vel[2] - b.rows[2][2] * forward_mod).abs() < 0.01, "{missile}: {:?} at {speed} (forwardMod {forward_mod})", b.vel);
             // the F-14A's Aim-54 never touches its plane (no collision in 300 records)
             if launcher == "F14A" {
-                s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 0.0), (axis::ALT_FIRE, 0.0)]);
+                s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 0.0), (axis::ALT_FIRE, 0.0)]);
                 for _ in 0..30 {
                     s.step();
                 }
@@ -1116,13 +1164,13 @@ mod guided {
             }
             s.enter(soldier, l, 0);
             if raised {
-                s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::MOUSE_Y, -1.0)]);
+                s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::MOUSE_Y, -1.0)]);
                 for _ in 0..60 {
                     s.step();
                 }
-                s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::MOUSE_Y, 0.0)]);
+                s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::MOUSE_Y, 0.0)]);
             }
-            s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
+            s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
             let n = s.vehicles.len();
             for _ in 0..30 {
                 s.step();
@@ -1132,7 +1180,7 @@ mod guided {
             }
             let r = n;
             assert_eq!(s.vehicles[r].template, "PatriotGuidedRocket");
-            s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 0.0)]);
+            s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 0.0)]);
             let born = s.clock.steps;
             let b = &s.vehicles[r].craft.body;
             assert!((b.vel[2] - b.rows[2][2] * 200.0).abs() < 0.01 && b.vel[1] == b.rows[2][1] * 200.0, "raised {raised}: {:?}", b.vel);
@@ -1173,7 +1221,7 @@ mod guided {
             let soldier = s.spawn_vehicle("USSoldier", [x - 2.0, y, z + 2.2], [0.0; 3]).unwrap();
             s.vehicles[soldier].team = 2;
             s.enter(soldier, l, 0);
-            s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
+            s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
             let n = s.vehicles.len();
             for _ in 0..30 {
                 s.step();
@@ -1184,7 +1232,7 @@ mod guided {
             let r = n;
             assert_eq!(s.vehicles[r].template, "PatriotGuidedRocket");
             assert_eq!(s.vehicles[soldier].entry.inside, Some(r));
-            s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 0.0)]);
+            s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(axis::FIRE, 0.0)]);
             if leave {
                 s.exit(soldier, r);
             } else {

@@ -7,18 +7,21 @@ import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
-    mesh_view_bindings::{view, lights},
+    mesh_view_bindings::{view, lights, globals},
     mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
     shadows::fetch_directional_shadow,
 };
 import bevy_pbr::render::{clustered_forward as clustering, mesh_view_bindings::clustered_lights, pbr_lighting::getDistanceAttenuation};
 import bevy_render::maths::PI;
+import bytefield::shaders::clouds::cloud_at;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var lightmap_texture: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(101) var lightmap_sampler: sampler;
 // what the surface keeps of its light in a shadow (rgb), in the screen's space; 1 without the sun's shadows. w: the far
 // distance f of a `textureFade` piece (else 0)
 @group(constants::MATERIAL_BIND_GROUP) @binding(102) var<uniform> shade: vec4<f32>;
+// x: how dark the clouds' shadows are (the setting `clouds`; 0 without them)
+@group(constants::MATERIAL_BIND_GROUP) @binding(103) var<uniform> clouds: vec4<f32>;
 
 // (as in tree.wesl)
 fn flash_light(p: vec4<f32>, n: vec3<f32>, frag: vec2<f32>) -> vec3<f32> {
@@ -77,17 +80,18 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     var linear = from_screen(lit);
     let n = normalize(in.world_normal);
     if (any(shade.xyz < vec3(1.0)) && lights.n_directional_lights > 0u) {
-        linear = linear * pow(mix(shade.xyz, vec3(1.0), sun_shadow(in.world_position, n, in.position.xy)), vec3(2.2));
+        linear = linear * pow(mix(shade.xyz, vec3(1.0), sun_shadow(in.world_position, n, in.position.xy) * (1.0 - clouds.x * cloud_at(in.world_position.xyz))), vec3(2.2));
     }
     linear = linear * (1.0 + flash_light(in.world_position, n, in.position.xy));
-    // `textureFade`: the original's TEXTUREFACTOR alpha for Husky's
-    // `italianhouse08_m1` (in Husky, f 200) is (d² − (f/10)²) / (f² − (f/10)²) of the distance d: clear up close, opaque at f.
-    // Level 2: the original by the object's distance, here the fragment's. TODO: the f/10 is a guess with f 200 only.
+    // `textureFade`: the original's TEXTUREFACTOR alpha is (d² − r²) / f² of the object's distance d, with f its
+    // `textureFadeMaxDist` and r about its radius: clear inside the sphere, opaque at √(f² + r²). Measured on houses placed at
+    // 20–100 m in El Alamein: `Afrhouse_m1` (f 70, r 16.27) and `French_Barn_Lrg_m1` (f 100, r 21.85) fit d² linearly to the
+    // thousandth, with slope 1/f² and the clear end at 16.64 and 22.21 m (0.37 m past r; up to 0.003 of alpha).
+    // Level 2: here the fragment's distance, not the object's.
     var alpha = color.a;
     if (shade.w > 0.0) {
         let d = in.world_position.xyz - view.world_position;
-        let n2 = shade.w * shade.w * 0.01;
-        alpha = alpha * clamp((dot(d, d) - n2) / (shade.w * shade.w - n2), 0.0, 1.0);
+        alpha = alpha * clamp((dot(d, d) - clouds.y * clouds.y) / (shade.w * shade.w), 0.0, 1.0);
     }
     var out: FragmentOutput;
     out.color = main_pass_post_lighting_processing(pbr_input, vec4(linear, alpha));

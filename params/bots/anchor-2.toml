@@ -1,0 +1,7 @@
+# The fixed rival from 1.20.0 (24-nov-2026): bots with the five FPS tweaks on by default (`fire-rhythm`, `friend-gate`,
+# `look-all`, `quick-react`, `fire-first`: +1.66 over anchor 1 in the SPRT with fresh seeds) and `prone-fight`, every other
+# experimental variant off and every value at its default. Never edited: a new anchor is a new file. (The one change, at 1.21.0: its mind is named
+# `bots:no-pistol-close`, so that it keeps playing as 1.20.0 once `pistol-close` became the default; same rounds as before; and at
+# 1.22.0, `+no-armour+no-close-fight+no-grenade-throw`, for the same; at 1.23.0, `+no-heard-walk`; at 1.24.0, `+no-fov+no-recall`.)
+mind = "bots:no-pistol-close+no-armour+no-close-fight+no-grenade-throw+no-heard-walk+no-fov+no-recall"
+about = "anchor 2: bots 1.20.0 (prone-fight and the FPS tweaks by default), defaults, variants off"

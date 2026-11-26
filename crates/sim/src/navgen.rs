@@ -140,6 +140,18 @@ impl World {
     }
 }
 
+impl World {
+    /// Whether the level ships its own map of `kind` (the official ones, drawn with the level), not one made here.
+    pub fn nav_map_shipped(&self, kind: Nav) -> bool {
+        let name = match kind {
+            Nav::Infantry => "Infantry1Level0Map.raw",
+            Nav::Tank => "Tank0Level0Map.raw",
+        };
+        let dir = self.level.terrain.heightmap.rsplit_once('/').map_or("", |d| d.0);
+        self.vfs.read(&format!("{dir}/Pathfinding/{name}")).is_ok()
+    }
+}
+
 /// The level-0 map of `kind`, generated with [`Params::of_world`].
 pub fn generate(world: &World, kind: Nav) -> PathMap {
     generate_with(world, &Params::of_world(world, kind))
@@ -151,6 +163,43 @@ pub fn generate_with(world: &World, params: &Params) -> PathMap {
     let mut blocked = terrain_mask(world, n, params);
     stamp_obstacles(world, n, params, &mut blocked);
     finish(n, blocked, params)
+}
+
+/// How high over the water line a bank still takes [`swim_map`]'s own verdict, m (the official tank maps close a band of land along
+/// the water, the brush's width, that a swimmer has to cross to come ashore).
+pub const SWIM_BANK_M: f64 = 2.0;
+/// Water at least this deep floats a swimmer, m: [`swim_map`]'s dear pixels.
+pub const SWIM_DEEP_M: f64 = 1.0;
+
+/// The tank map for what swims, and which of its pixels are water deep enough to float in. In deep water only the level's objects
+/// (and the brush round them) close a pixel; on a bank up to [`SWIM_BANK_M`] over the water line, the objects and the tank's slope;
+/// further up, the tank map as it is. `None` when the tank map is not the level's size.
+pub fn swim_map(world: &World, tank: &PathMap) -> Option<(PathMap, Vec<bool>)> {
+    let n = world.level.terrain.world_size as usize;
+    if tank.width != n || tank.height != n || tank.pixels.len() != n * n {
+        return None;
+    }
+    let mut params = Params::of_world(world, Nav::Tank);
+    let min_up = params.max_slope.to_radians().cos();
+    // the objects alone: no slope, no water
+    params.max_slope = 90.0;
+    params.water_depth = f64::INFINITY;
+    params.seeds.clear();
+    let objects = generate_with(world, &params);
+    let water = world.level.terrain.water_level;
+    let mut pixels = tank.pixels.clone();
+    let mut deep = vec![false; n * n];
+    for i in 0..n * n {
+        let (x, z) = ((i % n) as f64, (i / n) as f64);
+        let Some((h, normal)) = world.level.height_and_normal(x, z, bytefield_formats::image::Orientation::IDENTITY) else { continue };
+        if h < water - SWIM_DEEP_M {
+            deep[i] = true;
+            pixels[i] = objects.pixels[i];
+        } else if h < water + SWIM_BANK_M {
+            pixels[i] = (objects.pixels[i] != 0 || normal[1] < min_up) as u8;
+        }
+    }
+    Some((PathMap { width: n, height: n, bpp: tank.bpp, pixels }, deep))
 }
 
 /// Brush and fill, over what the terrain and objects have blocked.

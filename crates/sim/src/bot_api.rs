@@ -26,6 +26,40 @@ pub trait Mind: Send + Sync {
     fn speak(&mut self, _view: &BotView) -> Option<(crate::radio::Msg, Option<usize>)> {
         None
     }
+
+    /// What it means to do, as of its last [`Self::think`], for the measures that judge from outside what it does (`crate::dumb`):
+    /// nothing changes in the round. The default says nothing.
+    fn intent(&self) -> Intent {
+        Intent::default()
+    }
+}
+
+/// What a mind says it means to do ([`Mind::intent`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Intent {
+    /// it stands still on purpose, and why: standing there is not being stuck
+    pub waits: Option<Wait>,
+}
+
+/// Why a bot stands still on purpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Wait {
+    /// at its squad's assembly point, for the others before going in together
+    Rally,
+    /// lying in wait where the enemy passes
+    Ambush,
+    /// a flanker waiting for a mate to cover it
+    Cover,
+}
+
+impl Wait {
+    pub fn name(self) -> &'static str {
+        match self {
+            Wait::Rally => "rally",
+            Wait::Ambush => "ambush",
+            Wait::Cover => "cover",
+        }
+    }
 }
 
 /// What makes the mind of a team's new bot: the player's number goes in, for the seed.
@@ -47,6 +81,11 @@ impl std::fmt::Debug for Minds {
 impl Minds {
     pub fn plays(&self, team: u32) -> bool {
         self.makers.contains_key(&team)
+    }
+
+    /// What a player's mind says it means to do ([`Mind::intent`]); nothing for a player without one.
+    pub fn intent(&self, player: usize) -> Intent {
+        self.live.get(&player).map_or_else(Intent::default, |m| m.intent())
     }
 }
 
@@ -309,6 +348,8 @@ pub struct Me {
     /// the rounds in the magazine in use, and in the rest
     pub rounds: (i32, i32),
     pub inside: Option<Inside>,
+    /// its pose on foot, as the speeds read it: 0 standing, 1 crouched, 2 lying (`getPose`)
+    pub pose: usize,
 }
 
 /// Another player's soldier.
@@ -325,6 +366,9 @@ pub struct Other {
     pub kit: Option<usize>,
     /// the hit points of a soldier of its own team, from 0 to 1, as the bar on a comrade's name tag; of an enemy, nothing
     pub health: Option<f32>,
+    /// where the body is of one riding on a seat that shows him ([`crate::entry::SeatShow`]: the T-34-85's machine gunner stands
+    /// out of the turret from the waist up), a metre under his chest as [`Self::pos`] of one on foot: he can be shot there
+    pub exposed: Option<[f32; 3]>,
 }
 
 /// A way into a seat, in the world: where a person stands to get in (the doors of a jeep, the hatch of a tank).
@@ -450,7 +494,52 @@ pub struct BotView<'a, 'w> {
     others: std::cell::RefCell<Option<((usize, u32, [u32; 3]), Vec<Other>)>>,
 }
 
-impl BotView<'_, '_> {
+impl<'s> BotView<'s, '_> {
+    /// The view of player `k` now, as its mind gets it (for tests that ask what a bot would see); `None` if it has no body.
+    #[cfg(test)]
+    pub(crate) fn of(sim: &'s crate::Sim, k: usize) -> Option<BotView<'s, 's>> {
+        Some(BotView { sim, me: sim.me(k)?, dt: sim.clock.dt as f32, time: sim.clock.time, others: Default::default() })
+    }
+    /// For the traces only (no mind reads it): the vehicle player `k` is in, its seat, and whether that seat shows him (he can be
+    /// shot there, [`crate::entry::SeatShow`]).
+    pub(crate) fn trace_seat(&self, k: usize) -> Option<(String, usize, bool)> {
+        let s = self.sim;
+        let v = s.vehicles.get(s.players.get(k)?.soldier?)?;
+        let car = s.vehicles.get(v.entry.inside?)?;
+        Some((car.template.clone(), v.entry.position, car.entry.seats.get(v.entry.position).is_some_and(|x| x.show.is_some())))
+    }
+
+    /// For the traces only (no mind reads it): what bodies (soldiers and vehicles, its own aside) stand within `r` m of player `k`,
+    /// as `template@distance`, to tell what holds a bot that pushes and does not move.
+    pub(crate) fn trace_bodies_near(&self, k: usize, r: f32) -> String {
+        let s = self.sim;
+        let Some(mine) = s.players.get(k).and_then(|p| p.soldier) else { return String::new() };
+        let at = self.me.pos;
+        let mut near: Vec<(f32, String)> = s.vehicles.iter().enumerate().filter(|(i, v)| *i != mine && v.entry.inside.is_none()).filter_map(|(i, v)| {
+            let p = v.craft.body.pos;
+            let d = ((p[0] - at[0]).powi(2) + (p[2] - at[2]).powi(2)).sqrt();
+            let who = s.players.iter().position(|q| q.soldier == Some(i)).map_or_else(String::new, |q| format!("#{q}"));
+            (d < r && (p[1] - at[1]).abs() < 3.0).then(|| (d, format!("{}{who}", v.template)))
+        }).collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        near.iter().map(|(d, t)| format!("{t}@{d:.1}")).collect::<Vec<_>>().join(",")
+    }
+
+    /// The vehicle player `k` rides in. Ask it only of one in sight (`bots:armour`: what armour he sits in; [`Other::vehicle`] tests
+    /// a point over the hull, which a tank's own turret hides).
+    pub fn ride_of(&self, k: usize) -> Option<usize> {
+        let s = self.sim;
+        s.vehicles.get(s.players.get(k)?.soldier?)?.entry.inside
+    }
+
+    /// For the traces only: the vehicle player `k` rides in, and whether his seat shows him.
+    pub(crate) fn trace_ride(&self, k: usize) -> Option<(usize, bool)> {
+        let s = self.sim;
+        let v = s.vehicles.get(s.players.get(k)?.soldier?)?;
+        let j = v.entry.inside?;
+        Some((j, s.vehicles.get(j)?.entry.seats.get(v.entry.position).is_some_and(|x| x.show.is_some())))
+    }
+
     /// Everyone else's soldier that is alive, of both teams. Whether this bot can see them is for [`Self::hidden`] to say.
     pub fn others(&self) -> Vec<Other> {
         let key = (self.me.player, self.me.team, self.me.eye.map(f32::to_bits));
@@ -476,9 +565,29 @@ impl BotView<'_, '_> {
                 let health = (p.team == self.me.team).then(|| v.armor.as_ref().map_or(1.0, |a| if a.max_hp > 0.0 { (a.hp / a.max_hp).clamp(0.0, 1.0) } else { 1.0 }));
                 let seen = |c: &crate::mover::Vehicle| p.team == self.me.team || !s.hidden(self.me.eye, [c.craft.body.pos[0], c.craft.body.pos[1] + 1.5, c.craft.body.pos[2]]);
                 let vehicle = v.entry.inside.filter(|_| inside.is_some_and(seen));
-                Some(Other { player: k, team: p.team, pos: inside.map_or(v.craft.body.pos, |c| c.craft.body.pos), in_vehicle: inside.is_some(), vehicle, kit: (p.team == self.me.team).then_some(p.kit), health })
+                // (every rider is given the vehicle's place, as before the exposed gunners could be shot; the one that shows also his own)
+                let exposed = inside.and_then(|c| c.entry.seats.get(v.entry.position)).filter(|x| x.show.is_some()).map(|_| v.craft.body.pos);
+                Some(Other { player: k, team: p.team, pos: inside.map_or(v.craft.body.pos, |c| c.craft.body.pos), in_vehicle: inside.is_some(), vehicle, kit: (p.team == self.me.team).then_some(p.kit), health, exposed })
             })
             .collect()
+    }
+
+    /// What one round of `weapon` takes off vehicle `j` at a hit, as a share of its hit points ([`crate::Sim::round_share`]: at its
+    /// best face, over its faces by area, and the blast): what a person learns by shooting at one (a rifle does nothing to a tank).
+    pub fn round_share(&self, weapon: &str, j: usize) -> Option<[f32; 3]> {
+        self.sim.round_share(weapon, j)
+    }
+
+    /// Where a soldier on foot looks, flat and of length one: a person sees which way a soldier faces, but only one it sees, so ask
+    /// it only of an enemy already in sight. `None` for one in a vehicle or not alive.
+    pub fn facing(&self, player: usize) -> Option<[f32; 2]> {
+        let s = self.sim;
+        let p = s.players.get(player).filter(|p| p.alive)?;
+        let v = s.vehicles.get(p.soldier?).filter(|v| !v.removed && v.entry.inside.is_none())?;
+        let (rows, _) = v.soldier()?.camera_in_world(&v.craft.body);
+        let f = rows[2];
+        let l = f[0].hypot(f[2]);
+        (l > 1e-3).then(|| [f[0] / l, f[2] / l])
     }
 
     /// The flags of the round.
@@ -512,7 +621,7 @@ impl BotView<'_, '_> {
     /// One of them, if it is in the world (what [`Self::vehicles`] says of it, without making the whole list).
     pub fn vehicle(&self, j: usize) -> Option<VehicleSeen> {
         let s = self.sim;
-        let v = s.vehicles.get(j).filter(|v| v.in_world() && !v.is_soldier() && !v.entry.seats.is_empty())?;
+        let v = s.vehicles.get(j).filter(|v| v.in_world() && !v.has_soldier_contact() && !v.entry.seats.is_empty())?;
         let class = VehicleClass::of(v);
         Some(VehicleSeen {
             vehicle: j,
@@ -529,6 +638,18 @@ impl BotView<'_, '_> {
             fixed: v.fixed,
             free_seats: v.entry.seats.iter().enumerate().filter(|(n, seat)| !seat.entries.is_empty() && v.entry.occupants.get(*n).is_none_or(|o| o.is_none())).map(|(n, _)| n).collect(),
         })
+    }
+
+    /// For a trace: how many shots this bot's soldier fired since the cursor `seen` (counted from the round's start, as
+    /// [`crate::journal::log_since`] does), moving it to now. A shot is a step in which the simulation made its soldier's
+    /// projectiles (a shotgun's pellets are one shot; a pack's use makes none): with a bolt-action the magazine drops seconds after
+    /// the shot, so it cannot tell when the round left.
+    pub fn my_shots_since(&self, seen: &mut usize) -> u32 {
+        let s = self.sim;
+        let mine = s.players[self.me.player].soldier;
+        let mut steps: Vec<u64> = crate::journal::log_since(&s.journal.fired, s.journal.log_base.fired, seen).iter().filter(|f| Some(f.1) == mine).map(|f| f.0).collect();
+        steps.dedup();
+        steps.len() as u32
     }
 
     /// The shots of the last [`HEARD_S`] seconds fired within `radius` m of this bot by anyone else (own, and from its own
@@ -574,6 +695,13 @@ impl BotView<'_, '_> {
         self.sim.hidden(a, b)
     }
 
+    /// Whether a soldier walking straight from `a` to `b` meets a wall: the terrain, or the faces a soldier collides with (LOD 1) seen
+    /// from either side, fences that bullets go through included. [`BotView::hidden`] is the original's line of sight and sees faces
+    /// from the front only: from inside a building its walls hide nothing (DC_No_Fly_Zone's control tower, where one side spawns).
+    pub fn walk_blocked(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+        self.sim.walk_blocked(a, b)
+    }
+
     /// How far a vehicle may go from `a` towards `b` before it meets the terrain or one of the level's objects, m (the whole way
     /// when nothing is in between). What a driver sees of the walls around it: unlike [`BotView::hidden`] it counts what bullets go
     /// through, the faces seen from behind (a hangar's walls from inside) and the coarse mesh a big vehicle hits.
@@ -602,6 +730,11 @@ impl BotView<'_, '_> {
         }
         let side = [-dz / l * BODY_SHOULDER_HALF, dx / l * BODY_SHOULDER_HALF];
         [1.0f32, -1.0].into_iter().map(|s| [pos[0] + s * side[0], pos[1] + BODY_SHOULDER, pos[2] + s * side[1]]).find(|p| !self.sim.hidden(eye, *p))
+    }
+
+    /// Whether it is on a ladder.
+    pub fn climbing(&self) -> bool {
+        self.sim.players.get(self.me.player).and_then(|p| p.soldier).and_then(|i| self.sim.vehicles.get(i)).and_then(|v| v.soldier()).is_some_and(|m| m.climbing())
     }
 
     /// The ground's height, if on the map.
@@ -647,6 +780,34 @@ impl BotView<'_, '_> {
         self.sim.world.nav_map(kind).map(|m| (*m).clone())
     }
 
+    /// The level's walkable-surface navigation mesh ([`crate::World::navmesh`]).
+    pub(crate) fn navmesh(&self) -> std::sync::Arc<crate::navmesh::NavMesh> {
+        self.sim.world.navmesh()
+    }
+
+    /// The level's per-map memory for the bots ([`crate::bots::memory`]), read from `dir` if there is one made for this map: what
+    /// the map is like for each side, learnt before the round, not who is where.
+    pub(crate) fn bots_memory(&self) -> Option<crate::bots::memory::Memory> {
+        let flags: Vec<[f32; 3]> = self.flags().iter().map(|f| f.pos).collect();
+        crate::bots::memory::Memory::load(&crate::bots::memory::dir(&self.sim.world.game), &self.sim.world.level.name, &flags)
+    }
+
+    /// The level's cover points over [`BotView::navmesh`] ([`crate::World::cover_points`]): what the map is, not who is where.
+    pub(crate) fn cover_points(&self) -> std::sync::Arc<crate::cover::CoverPoints> {
+        self.sim.world.cover_points()
+    }
+
+
+    /// Whether that map is the level's own ([`crate::World::nav_map_shipped`]), not one made for it.
+    /// The tank map for what swims and its deep-water pixels ([`crate::navgen::swim_map`]); `None` without a tank map.
+    pub fn nav_swim(&self) -> Option<(PathMap, Vec<bool>)> {
+        crate::navgen::swim_map(&self.sim.world, &*self.sim.world.nav_map(Nav::Tank)?)
+    }
+
+    pub fn nav_shipped(&self, kind: Nav) -> bool {
+        self.sim.world.nav_map_shipped(kind)
+    }
+
     /// Where one gets into a seat of a vehicle, in the world and as the vehicle stands now (its doors move with it): every entry
     /// of the seat, a seat it has not being the driver's. Empty for what is not in the world or has no seat.
     pub fn seat_entries(&self, vehicle: usize, seat: usize) -> Vec<SeatEntry> {
@@ -676,29 +837,29 @@ impl<'w> crate::Sim<'w> {
         self.drivers.minds.makers.insert(team, maker);
     }
 
-    /// The computer's players get bots: `bots2`, written from what is seen from outside, on both teams.
+    /// The computer's players get bots: the plain bot, written from what is seen from outside, on both teams.
     pub fn enable_bots(&mut self) {
-        // (`--bot-ai bots3`)
-        if crate::bots3::is_default() {
-            return self.enable_bots3();
+        // (`--bot-ai bots`)
+        if crate::bots::is_default() {
+            return self.enable_team_bots();
         }
         // The path maps, now and not when the first bot asks for them: making them costs up to 2.9 s per map (GC_Endor),
         // and in a round that was a simulation step that long.
-        let maps = crate::bots2::Maps::prepare(self.world);
+        let maps = crate::bots::body::Maps::prepare(self.world);
         let level = self.world.level.name.clone();
         for team in [1, 2] {
-            self.set_minds(team, crate::bots2::maker_with(&level, 0, maps.clone()));
+            self.set_minds(team, crate::bots::life::maker_with(&level, 0, maps.clone()));
         }
     }
 
     /// A land vehicle with a driver's seat free and not wrecked: one a bot (or a script's `seek`) goes for.
     pub fn free_to_ride(&self, j: usize) -> bool {
-        self.vehicles.get(j).is_some_and(|c| !c.removed && !c.is_soldier() && c.entry.driver.is_none() && !c.entry.seats.is_empty() && land_vehicle(c) && !c.armor.as_ref().is_some_and(|a| a.destroyed || a.hp <= 0.0))
+        self.vehicles.get(j).is_some_and(|c| !c.removed && !c.has_soldier_contact() && c.entry.driver.is_none() && !c.entry.seats.is_empty() && land_vehicle(c) && !c.armor.as_ref().is_some_and(|a| a.destroyed || a.hp <= 0.0))
     }
 
     /// The world positions of the entries of seat `seat` of vehicle `j` (the driver's when it has no such seat).
     pub fn seat_entries(&self, j: usize, seat: usize) -> Vec<SeatEntry> {
-        let Some(c) = self.vehicles.get(j).filter(|c| !c.removed && !c.is_soldier()) else { return Vec::new() };
+        let Some(c) = self.vehicles.get(j).filter(|c| !c.removed && !c.has_soldier_contact()) else { return Vec::new() };
         let b = &c.craft.body;
         c.entry.seats.get(seat).or(c.entry.seats.first()).map_or(&[][..], |s| &s.entries[..])
             .iter()
@@ -717,7 +878,7 @@ impl<'w> crate::Sim<'w> {
     pub fn seek_seat_axes(&self, i: usize, j: usize, seat: usize, press: bool, round: bool) -> Vec<(usize, f32)> {
         let v = &self.vehicles[i];
         let pos = v.craft.body.pos;
-        let fwd = v.movement.as_ref().map_or(v.craft.body.rows[2], |m| m.view(&v.craft.body, [0.0; 2]).0[2]);
+        let fwd = v.soldier().map_or(v.craft.body.rows[2], |m| m.view(&v.craft.body, [0.0; 2]).0[2]);
         let d2 = |q: [f32; 3]| (q[0] - pos[0]).powi(2) + (q[2] - pos[2]).powi(2);
         let c = &self.vehicles[j];
         let b = &c.craft.body;
@@ -767,32 +928,18 @@ impl<'w> crate::Sim<'w> {
         free
     }
 
+    /// [`BotView::walk_blocked`].
+    pub(crate) fn walk_blocked(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+        self.world.walk_blocked(a, b)
+    }
+
     /// Whether the terrain (samples every 2 m, a little over the ground) or one of the level's
     /// objects that stop bullets hides `b` from `a`.
     // TODO(perf): one `height_at` every 2 m makes long rays dear (a 400 m one over Coral_Sea's sea is 200); a distance cap
     // (nothing past the view distance is used) or one sample per terrain cell would make it 2-3x cheaper, but either may
     // change what a bot sees: only if a map goes over the bots' budget, and checked against the line-of-sight tests
-    pub(crate) fn hidden(&self, a: [f32; 3], b: [f32; 3]) -> bool {
-        let d: f32 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f32>().sqrt();
-        let n = (d / 2.0).ceil().max(1.0) as usize;
-        let terrain = (1..n).any(|i| {
-            let t = i as f32 / n as f32;
-            let p: [f32; 3] = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
-            self.world.height_at(p[0] as f64, p[2] as f64).is_some_and(|h| h as f32 > p[1] - 0.2)
-        });
-        if terrain {
-            return true;
-        }
-        let dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-        // (only the obstacles along the line: the same ones in the same order)
-        thread_local!(static ALONG: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) });
-        let obstacles = self.world.obstacles();
-        ALONG.with_borrow_mut(|along| {
-            self.world.obstacle_grid().along(a, dir, along);
-            along.iter().map(|&i| &obstacles[i as usize]).filter(|o| !o.projectiles_pass && crate::projectile::segment_near_sphere(a, dir, o.center, o.radius + 1.0)).any(|o| {
-                crate::obstacle::pick_lod(&o.lods, 1).is_some_and(|mesh| crate::obstacle::segment_blocked_skipping(mesh, &o.rows, o.pos, o.scale, a, dir, false, Some(crate::projectile::NON_SOLID_MATERIAL)))
-            })
-        })
+    pub fn hidden(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+        self.world.hidden(a, b)
     }
 
     /// What the dead player `k` sees on the spawn screen, if its team has a mind to ask.
@@ -822,10 +969,10 @@ impl<'w> crate::Sim<'w> {
                 let v = self.vehicles.get(m.soldier?).filter(|v| !v.removed)?;
                 let inside = v.entry.inside.and_then(|i| self.vehicles.get(i));
                 let health = v.armor.as_ref().map_or(1.0, |a| if a.max_hp > 0.0 { (a.hp / a.max_hp).clamp(0.0, 1.0) } else { 1.0 });
-                Some(Other { player: q, team, pos: inside.map_or(v.craft.body.pos, |c| c.craft.body.pos), in_vehicle: inside.is_some(), vehicle: v.entry.inside, kit: Some(m.kit), health: Some(health) })
+                Some(Other { player: q, team, pos: inside.map_or(v.craft.body.pos, |c| c.craft.body.pos), in_vehicle: inside.is_some(), vehicle: v.entry.inside, kit: Some(m.kit), health: Some(health), exposed: None })
             })
             .collect();
-        let view = BotView { sim: self, me: Me { player: k, team, pos: [0.0; 3], eye: [0.0; 3], view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 0.0, kit: p.kit, items: Vec::new(), ammo: Vec::new(), muzzle: [0.0; 3], weapon: None, single_shot: false, rounds: (0, 0), inside: None }, dt: self.clock.dt as f32, time: self.clock.time, others: Default::default() };
+        let view = BotView { sim: self, me: Me { player: k, team, pos: [0.0; 3], eye: [0.0; 3], view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 0.0, kit: p.kit, items: Vec::new(), ammo: Vec::new(), muzzle: [0.0; 3], weapon: None, single_shot: false, rounds: (0, 0), inside: None, pose: 0 }, dt: self.clock.dt as f32, time: self.clock.time, others: Default::default() };
         Some(DeadView { player: k, team, time: self.clock.time, kits, groups, flags: view.flags(), mates, vehicles: view.vehicles() })
     }
 
@@ -850,11 +997,11 @@ impl<'w> crate::Sim<'w> {
         self.drivers.minds = minds;
     }
 
-    fn me(&self, k: usize) -> Option<Me> {
+    pub(crate) fn me(&self, k: usize) -> Option<Me> {
         let p = &self.players[k];
         let i = p.soldier?;
         let v = self.vehicles.get(i).filter(|v| !v.removed)?;
-        let m = v.movement.as_ref()?;
+        let m = v.soldier()?;
         let (view, eye) = m.camera_in_world(&v.craft.body);
         let inside = v.entry.inside.and_then(|c| {
             let car = self.vehicles.get(c)?;
@@ -894,6 +1041,7 @@ impl<'w> crate::Sim<'w> {
             single_shot: w.is_some_and(|w| w.template.fire_once),
             rounds: w.map_or((0, 0), |w| (w.mags.first().copied().unwrap_or(0), w.mags.iter().skip(1).sum())),
             inside,
+            pose: m.pose(),
         })
     }
 
@@ -920,7 +1068,7 @@ impl<'w> crate::Sim<'w> {
         }
         // (what they say goes into the log after all have thought: in this tick no bot hears another, whatever their order)
         for (k, soldier, axes, said) in orders {
-            if let Some(m) = soldier.and_then(|i| self.vehicles.get_mut(i)).and_then(|v| v.movement.as_mut()) {
+            if let Some(m) = soldier.and_then(|i| self.vehicles.get_mut(i)).and_then(|v| v.soldier_mut()) {
                 m.set_input(&crate::input::through_actions(&axes));
             }
             if let Some((msg, point)) = said {
@@ -989,7 +1137,7 @@ mod tests {
         }
     }
 
-    /// A mind picks where and as what it spawns; one that does not (bots2) spawns as before.
+    /// A mind picks where and as what it spawns; one that does not (the plain bot) spawns as before.
     #[test]
     fn a_mind_chooses_its_spawn_group_and_kit() {
         let game = bytefield_testdata::require!(Base);
@@ -1020,7 +1168,7 @@ mod tests {
         assert!(near, "born at one of its points: {pos:?}");
         assert!(s.drivers.minds.live.contains_key(&k), "the mind that chose lives on into its life");
         // a seat other than the driver's has its own entry: the axes aim somewhere else than seat 0's when the vehicle has one
-        let j = (0..s.vehicles.len()).find(|&j| s.vehicles[j].in_world() && !s.vehicles[j].is_soldier() && s.vehicles[j].entry.seats.len() >= 2 && s.vehicles[j].entry.seats[1].entries.iter().any(|e| e.pos != s.vehicles[j].entry.seats[0].entries[0].pos)).expect("a vehicle with two seats");
+        let j = (0..s.vehicles.len()).find(|&j| s.vehicles[j].in_world() && !s.vehicles[j].has_soldier_contact() && s.vehicles[j].entry.seats.len() >= 2 && s.vehicles[j].entry.seats[1].entries.iter().any(|e| e.pos != s.vehicles[j].entry.seats[0].entries[0].pos)).expect("a vehicle with two seats");
         let a = s.seek_seat_axes(i, j, 0, false, true);
         let b = s.seek_seat_axes(i, j, 1, false, true);
         assert_eq!(a.len(), b.len());
@@ -1039,7 +1187,7 @@ mod tests {
         s.start_conquest();
         let quiet: Vec<Flag> = {
             let k = s.join(1, true);
-            let view = BotView { sim: &s, me: Me { player: k, team: 1, pos: [0.0; 3], eye: [0.0; 3], view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 1.0, kit: 0, items: Vec::new(), ammo: Vec::new(), muzzle: [0.0; 3], weapon: None, single_shot: false, rounds: (0, 0), inside: None }, dt: 1.0 / 30.0, time: 0.0, others: Default::default() };
+            let view = BotView { sim: &s, me: Me { player: k, team: 1, pos: [0.0; 3], eye: [0.0; 3], view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 1.0, kit: 0, items: Vec::new(), ammo: Vec::new(), muzzle: [0.0; 3], weapon: None, single_shot: false, rounds: (0, 0), inside: None, pose: 0 }, dt: 1.0 / 30.0, time: 0.0, others: Default::default() };
             view.flags()
         };
         assert!(!quiet.is_empty() && quiet.iter().all(|f| !f.contested && f.taker == 0 && f.bar == 0.0), "nothing happens at the start");
@@ -1050,7 +1198,7 @@ mod tests {
         p.taker = 2;
         p.lose = p.template.time_to_lose * 0.25;
         let k = 0;
-        let view = BotView { sim: &s, me: Me { player: k, team: 1, pos: [0.0; 3], eye: [0.0; 3], view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 1.0, kit: 0, items: Vec::new(), ammo: Vec::new(), muzzle: [0.0; 3], weapon: None, single_shot: false, rounds: (0, 0), inside: None }, dt: 1.0 / 30.0, time: 0.0, others: Default::default() };
+        let view = BotView { sim: &s, me: Me { player: k, team: 1, pos: [0.0; 3], eye: [0.0; 3], view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 1.0, kit: 0, items: Vec::new(), ammo: Vec::new(), muzzle: [0.0; 3], weapon: None, single_shot: false, rounds: (0, 0), inside: None, pose: 0 }, dt: 1.0 / 30.0, time: 0.0, others: Default::default() };
         let f = view.flags().into_iter().find(|f| f.contested).expect("the flag is contested");
         assert_eq!(f.taker, 2);
         assert!((f.bar - 0.75).abs() < 1e-3, "three quarters of the way: {}", f.bar);
@@ -1100,7 +1248,7 @@ mod tests {
             ev(0, 1, crate::radio::PICKUP, o),                         // our own
         ];
         s.journal.radio_log.extend(evs);
-        let me = |player: usize, team: u32| Me { player, team, pos: o, eye: o, view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 1.0, kit: 0, items: Vec::new(), ammo: Vec::new(), muzzle: o, weapon: None, single_shot: false, rounds: (0, 0), inside: None };
+        let me = |player: usize, team: u32| Me { player, team, pos: o, eye: o, view: [[0.0; 3]; 3], velocity: [0.0; 3], health: 1.0, kit: 0, items: Vec::new(), ammo: Vec::new(), muzzle: o, weapon: None, single_shot: false, rounds: (0, 0), inside: None, pose: 0 };
         let heard = |s: &crate::Sim, player: usize, team: u32| -> Vec<usize> { BotView { sim: s, me: me(player, team), dt: 1.0 / 30.0, time: 0.0, others: Default::default() }.radio(5.0).iter().map(|h| h.player).collect() };
         assert_eq!(heard(&s, 0, 1), vec![12, 10], "team 1: its radio and the enemy's shout, not its own");
         assert_eq!(heard(&s, 1, 2), vec![12, 11], "team 2: its radio and its shout, not team 1's radio nor the far shout");
@@ -1118,7 +1266,7 @@ mod tests {
             let mut s = crate::Sim::new(&w, 1.0 / 30.0);
             s.round.playing = true;
             s.start_conquest();
-            s.vehicles.iter().filter(|v| v.in_world() && !v.is_soldier() && !v.entry.seats.is_empty()).map(|v| (v.template.to_ascii_lowercase(), VehicleClass::of(v))).collect()
+            s.vehicles.iter().filter(|v| v.in_world() && !v.has_soldier_contact() && !v.entry.seats.is_empty()).map(|v| (v.template.to_ascii_lowercase(), VehicleClass::of(v))).collect()
         };
         for (t, c) in classes("GCMOD", "GC_Hoth") {
             assert_eq!(c == VehicleClass::Walker, t.starts_with("atat") || t.starts_with("atst"), "{t}: {c:?}");

@@ -270,7 +270,7 @@ fn the_vehicle_ahead(warm: u64) {
                 let q = s.vehicles[k].craft.body.pos;
                 (q[0] - p[0]).powi(2) + (q[2] - p[2]).powi(2)
             };
-            let k = (0..s.vehicles.len()).filter(|&k| !s.vehicles[k].fixed && s.vehicles[k].in_world() && s.vehicles[k].entry.seats.len() > 1 && s.vehicles[k].movement.is_none()).min_by(|&a, &b| d(a).total_cmp(&d(b))).expect("a vehicle");
+            let k = (0..s.vehicles.len()).filter(|&k| !s.vehicles[k].fixed && s.vehicles[k].in_world() && s.vehicles[k].entry.seats.len() > 1 && s.vehicles[k].soldier().is_none()).min_by(|&a, &b| d(a).total_cmp(&d(b))).expect("a vehicle");
             s.enter(i, k, 0);
             eprintln!("in {} at step {}", s.vehicles[k].template, s.clock.steps);
             entered = Some((s.clock.steps, i, k));

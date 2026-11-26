@@ -69,7 +69,7 @@ fn main() {
                     if k == 0 {
                         println!("  {skin} kit {kit}: weapons {:.1} KB, parts {:.1} KB", (l1 - l0) as f64 / 1e3, (live() - l1) as f64 / 1e3);
                     }
-                    if let Some(m) = s.vehicles[i].movement.as_mut() {
+                    if let Some(m) = s.vehicles[i].soldier_mut() {
                         m.kit_parts = parts;
                     }
                 }

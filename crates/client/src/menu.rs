@@ -83,6 +83,8 @@ enum Act {
     Pack(usize),
     /// a graphics setting one step (`graphics::Row`)
     Gfx(crate::graphics::Row, i32),
+    /// the folder typed on the options' page, added (Enter)
+    AddFolder,
     Join,
     /// leave the round, back to the menu
     Disconnect,
@@ -170,6 +172,9 @@ pub struct Menu {
     conflict: Option<&'static str>,
     /// the press that gave a key is not also a click
     swallow: bool,
+    /// a pack's or a mod's folder being typed on the options' page, and what adding the last one said (its line, or why not)
+    folder: String,
+    folder_said: Option<Result<String, String>>,
 }
 
 /// What the menu chose, for `main` to load.
@@ -282,6 +287,13 @@ fn run_steps(mut steps: ResMut<Steps>, menu: Option<ResMut<Menu>>) {
                 if let Some(m) = menu.as_mut() {
                     m.address = t[5..].to_string();
                     m.dirty = true;
+                }
+            }
+            // (typed on the options' page and Enter: `folder=~/packs/hd`)
+            t if t.starts_with("folder=") => {
+                if let Some(m) = menu.as_mut() {
+                    m.folder = t[7..].to_string();
+                    m.pending = Some(Act::AddFolder);
                 }
             }
             other => match (step_act(other), menu.as_mut()) {
@@ -418,6 +430,8 @@ impl Menu {
             define: None,
             conflict: None,
             swallow: false,
+            folder: String::new(),
+            folder_said: None,
         };
         let base = bytefield_con::session::resolve_ci(&m.game, "Mods/bf1942/lexiconAll.dat").and_then(|p| std::fs::read(p).ok());
         m.lexicon[1] = base.and_then(|b| Lexicon::parse(&b)).unwrap_or_default();
@@ -698,25 +712,48 @@ fn panel(s: &mut ChildSpawnerCommands, m: &mut Menu, images: &mut Assets<Image>,
 fn dropped(mut drops: MessageReader<bevy::window::FileDragAndDrop>, mut menu: ResMut<Menu>, mut settings: ResMut<Settings>) {
     for d in drops.read() {
         let bevy::window::FileDragAndDrop::DroppedFile { path_buf, .. } = d else { continue };
-        match settings.content.add_dir(path_buf) {
-            Ok(line) => info!("added {line}"),
-            Err(e) => {
-                warn!("{e}");
-                continue;
-            }
-        }
-        settings.save();
-        settings.apply_content(None, None);
-        let m = &mut *menu;
-        let current = m.mods[m.mod_index].clone();
-        (m.mods, m.mod_info) = mods(&m.game);
-        m.mod_index = m.mods.iter().position(|x| *x == current).unwrap_or(0);
-        m.mod_pick = m.mod_index;
-        if let Err(e) = m.mount() {
-            warn!("{e}");
-        }
-        m.dirty = true;
+        add_folder(&mut menu, &mut settings, path_buf);
     }
+}
+
+/// A folder added, dropped or typed: saved, and the mods' list and the pack rows follow.
+fn add_folder(m: &mut Menu, settings: &mut Settings, dir: &std::path::Path) {
+    let said = settings.content.add_dir(dir);
+    m.dirty = true;
+    match &said {
+        Ok(line) => info!("added {line}"),
+        Err(e) => warn!("{e}"),
+    }
+    let ok = said.is_ok();
+    m.folder_said = Some(said);
+    if !ok {
+        return;
+    }
+    m.folder.clear();
+    settings.save();
+    settings.apply_content(None, None);
+    let current = m.mods[m.mod_index].clone();
+    (m.mods, m.mod_info) = mods(&m.game);
+    m.mod_index = m.mods.iter().position(|x| *x == current).unwrap_or(0);
+    m.mod_pick = m.mod_index;
+    if let Err(e) = m.mount() {
+        warn!("{e}");
+    }
+}
+
+/// A typed folder as a path: `~` is the home folder.
+fn typed_path(typed: &str) -> PathBuf {
+    let t = typed.trim();
+    match (t.strip_prefix('~'), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) if rest.is_empty() || rest.starts_with('/') => PathBuf::from(home).join(rest.trim_start_matches('/')),
+        _ => PathBuf::from(t),
+    }
+}
+
+/// The end of a long typed text, as much as the value's box holds.
+fn tail(s: &str, chars: usize) -> String {
+    let n = s.chars().count();
+    if n <= chars { s.to_string() } else { format!("…{}", s.chars().skip(n + 1 - chars).collect::<String>()) }
 }
 
 /// Packs that get a row each on the options' page; more, one row for all.
@@ -732,8 +769,8 @@ fn options_page(s: &mut ChildSpawnerCommands, m: &mut Menu, settings: &Settings,
     ];
     let mut rows = rows;
     // (ours, from the next round on: the graphics packs if any, one row each while they fit)
-    // (a folder dropped on the window is added as `bytefield-content add` does: [`dropped`])
-    // TODO: typed, too, as `first_screen` takes the install's (where a desktop has no dropping).
+    // (a folder dropped on the window, or typed here and Enter, is added as `bytefield-content add` does: [`add_folder`])
+    rows.push((crate::lang::ours("ADD_FOLDER").unwrap_or("ADD FOLDER").to_string(), format!("{}_", tail(&m.folder, 16)), Act::AddFolder, Act::AddFolder));
     let packs = &settings.content.packs;
     let yes_no = |on: bool| if on { t("CONFIRMATION_YES") } else { t("CONFIRMATION_NO") };
     if std::env::var_os("BYTEFIELD_HD").is_some() || packs.len() > MAX_PACK_ROWS {
@@ -749,8 +786,17 @@ fn options_page(s: &mut ChildSpawnerCommands, m: &mut Menu, settings: &Settings,
         rows.push((tg(r.label()), r.value(settings, &tg), Act::Gfx(r, -1), Act::Gfx(r, 1)));
     }
     let title = t("MENU_OPTIONS");
-    // (ours: version, licence and the trademark notice, as an «About»)
-    panel(s, m, images, title, rows, Some(crate::lang::about()));
+    // (ours: version, licence and the trademark notice, as an «About»; above it, what the last folder added said)
+    let about = crate::lang::about();
+    let note = match &m.folder_said {
+        Some(Ok(line)) => match line.split_once(": ") {
+            Some((what, path)) => format!("{what}: {}\n\n{about}", tail(path, 40)),
+            None => format!("{line}\n\n{about}"),
+        },
+        Some(Err(e)) => format!("{}: {e}\n\n{about}", crate::lang::ours("FOLDER_NOT_ADDED").unwrap_or("NOT ADDED")),
+        None => about,
+    };
+    panel(s, m, images, title, rows, Some(note));
 }
 
 /// The graphics settings of a page: the original's names where its video menu has
@@ -1227,6 +1273,12 @@ fn buttons(
                 }
             }
         }
+        Act::AddFolder => {
+            if !m.folder.trim().is_empty() {
+                let dir = typed_path(&m.folder);
+                add_folder(m, &mut settings, &dir);
+            }
+        }
         Act::Hd | Act::Pack(_) => {
             // all on or all off, or one (their order: `bytefield-content`)
             let c = &mut settings.content;
@@ -1291,12 +1343,28 @@ fn wheel(mut menu: ResMut<Menu>, mut events: MessageReader<MouseWheel>) {
     }
 }
 
-/// The server's address is typed on the join page; Enter joins.
+/// The server's address is typed on the join page; Enter joins. On the options' page, a folder; Enter adds it.
 fn typing(mut menu: ResMut<Menu>, mut keys: MessageReader<bevy::input::keyboard::KeyboardInput>) {
     use bevy::input::keyboard::Key;
     let mut changed = false;
     for k in keys.read() {
-        if menu.page != Page::Join || !k.state.is_pressed() || menu.loading.is_some() {
+        if !k.state.is_pressed() || menu.loading.is_some() || menu.asking.is_some() {
+            continue;
+        }
+        if menu.page == Page::Options {
+            match &k.logical_key {
+                Key::Character(c) => menu.folder.extend(c.chars().filter(|ch| !ch.is_control())),
+                Key::Space => menu.folder.push(' '),
+                Key::Backspace => _ = menu.folder.pop(),
+                Key::Enter => menu.pending = Some(Act::AddFolder),
+                _ => continue,
+            }
+            let end = menu.folder.char_indices().nth(1024).map_or(menu.folder.len(), |(i, _)| i);
+            menu.folder.truncate(end);
+            changed = true;
+            continue;
+        }
+        if menu.page != Page::Join {
             continue;
         }
         match &k.logical_key {
@@ -1438,5 +1506,21 @@ mod data_tests {
         // a mod's lexicon lacks some keys: bf1942's has them
         let dc = Menu::new(m.game.clone(), "DC_Final", Page::CreateGame, None, &Settings::default()).unwrap();
         assert_eq!(text(&dc.lexicon, "MAPVOTE_MOD"), "Mod");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_folder_and_its_end() {
+        if let Some(home) = std::env::var_os("HOME") {
+            assert_eq!(typed_path(" ~/packs/hd "), PathBuf::from(&home).join("packs/hd"));
+            assert_eq!(typed_path("~"), PathBuf::from(&home));
+        }
+        assert_eq!(typed_path("~other/x"), PathBuf::from("~other/x"));
+        assert_eq!(tail("/a/b", 16), "/a/b");
+        assert_eq!(tail("/srv/games/packs/hd", 9), "…packs/hd");
     }
 }

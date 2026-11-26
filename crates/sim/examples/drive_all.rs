@@ -19,7 +19,7 @@ fn main() {
         s.start_conquest();
         let mut seen = std::collections::BTreeMap::new();
         for (i, v) in s.vehicles.iter().enumerate() {
-            if v.movement.is_none() && !v.fixed && !v.removed {
+            if v.soldier().is_none() && !v.fixed && !v.removed {
                 seen.entry(v.template.clone()).or_insert(i);
             }
         }
@@ -46,7 +46,7 @@ fn main() {
         s.vehicles[soldier].team = 1;
         s.vehicles[k].team = 0;
         s.enter(soldier, k, 0);
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::THROTTLE, throttle), (bytefield_sim::soldier::axis::YAW, yaw)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::THROTTLE, throttle), (bytefield_sim::soldier::axis::YAW, yaw)]);
         let hp0 = s.vehicles[k].armor.as_ref().map_or(0.0, |a| a.hp);
         let mut top = 0.0f32;
         let mut tilted = 0usize;
@@ -54,7 +54,7 @@ fn main() {
             if let Some(c) = cap {
                 let u = s.vehicles[k].craft.body.vel;
                 let t = if (u[0] * u[0] + u[1] * u[1] + u[2] * u[2]).sqrt() > c { 0.0 } else { throttle };
-                s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::THROTTLE, t), (bytefield_sim::soldier::axis::YAW, yaw)]);
+                s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::THROTTLE, t), (bytefield_sim::soldier::axis::YAW, yaw)]);
             }
             s.step();
             let u = s.vehicles[k].craft.body.vel;

@@ -19,11 +19,11 @@ fn main() {
     }
     s.enter(soldier, l, 0);
     if up {
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::MOUSE_Y, -1.0)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::MOUSE_Y, -1.0)]);
         for _ in 0..40 {
             s.step();
         }
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::MOUSE_Y, 0.0)]);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::MOUSE_Y, 0.0)]);
         for _ in 0..10 {
             s.step();
         }
@@ -34,7 +34,7 @@ fn main() {
         let (rows, pos) = c.frame(&lv.craft.body);
         println!("  part {k} root {} radius {:.2} verts {} faces {:?} at {:?} fwd {:?}", c.is_root, c.radius, c.vertices.len(), c.faces.iter().map(|f| f.faces.len()).collect::<Vec<_>>(), pos, rows[2]);
     }
-    s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0)]);
+    s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0)]);
     let n = s.vehicles.len();
     let mut born = None;
     for _ in 0..40 {
@@ -50,7 +50,7 @@ fn main() {
     for (k, c) in s.vehicles[r].contacts.iter().enumerate() {
         println!("  part {k} root {} radius {:.2} verts {} faces {:?} vertices {:?}", c.is_root, c.radius, c.vertices.len(), c.faces.iter().map(|f| f.faces.len()).collect::<Vec<_>>(), c.vertices);
     }
-    s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 0.0)]);
+    s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 0.0)]);
     for f in 0..frames {
         let v = &s.vehicles[r];
         let b = &v.craft.body;

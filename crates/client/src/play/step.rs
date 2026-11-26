@@ -80,7 +80,7 @@ pub(super) fn step(
                 let at = sim.vehicles[i].craft.body.pos;
                 let d = |v: &bytefield_sim::mover::Vehicle| (0..3).map(|j| (v.craft.body.pos[j] - at[j]).powi(2)).sum::<f32>();
                 let only = std::env::var("BYTEFIELD_BOARD").ok();
-                let free = sim.vehicles.iter().enumerate().filter(|(_, v)| only.as_ref().is_none_or(|t| v.template.eq_ignore_ascii_case(t)) && !v.removed && !v.is_soldier() && v.entry.occupants.first().is_some_and(|o| o.is_none()) && (only.is_some() || v.weapons.iter().any(|(p, _)| v.craft.parts[*p].seat == 0))).min_by(|a, b| d(a.1).total_cmp(&d(b.1))).map(|(k, _)| k);
+                let free = sim.vehicles.iter().enumerate().filter(|(_, v)| only.as_ref().is_none_or(|t| v.template.eq_ignore_ascii_case(t)) && !v.removed && !v.has_soldier_contact() && v.entry.occupants.first().is_some_and(|o| o.is_none()) && (only.is_some() || v.weapons.iter().any(|(p, _)| v.craft.parts[*p].seat == 0))).min_by(|a, b| d(a.1).total_cmp(&d(b.1))).map(|(k, _)| k);
                 if let Some(k) = free {
                     let seat = std::env::var("BYTEFIELD_BOARD_SEAT").ok().and_then(|n| n.parse().ok()).filter(|&n| n < sim.vehicles[k].entry.seats.len()).unwrap_or(0);
                     sim.enter(i, k, seat);
@@ -97,7 +97,7 @@ pub(super) fn step(
                 let d = |v: &bytefield_sim::mover::Vehicle| (0..3).map(|j| (v.craft.body.pos[j] - at[j]).powi(2)).sum::<f32>();
                 let only = std::env::var("BYTEFIELD_WRECK").ok();
                 let mine = sim.vehicles[i].entry.inside;
-                let near = sim.vehicles.iter().enumerate().filter(|(k, v)| Some(*k) != mine && only.as_ref().is_none_or(|t| v.template.eq_ignore_ascii_case(t)) && !v.removed && !v.is_soldier() && v.armor.as_ref().is_some_and(|a| !a.destroyed)).min_by(|a, b| d(a.1).total_cmp(&d(b.1))).map(|(k, _)| k);
+                let near = sim.vehicles.iter().enumerate().filter(|(k, v)| Some(*k) != mine && only.as_ref().is_none_or(|t| v.template.eq_ignore_ascii_case(t)) && !v.removed && !v.has_soldier_contact() && v.armor.as_ref().is_some_and(|a| !a.destroyed)).min_by(|a, b| d(a.1).total_cmp(&d(b.1))).map(|(k, _)| k);
                 if let Some(k) = near {
                     println!("wreck: {} at {:?}", sim.vehicles[k].template, sim.vehicles[k].craft.body.pos);
                     sim.give_damage(k, 100_000.0, bytefield_sim::damage::Source::Hit);
@@ -218,6 +218,8 @@ pub(super) fn step(
             0.0
         };
         state_log(g, &a);
+        film_log(g);
+        bomb_cam(g);
         if !g.on_orig() {
             match g.net.as_mut() {
                 // (the action labelled after the last step we know; the server takes it as soon as
@@ -232,7 +234,9 @@ pub(super) fn step(
                     }
                 }
                 None => {
-                    g.session.set_action(player, &a);
+                    if !g.session.sim.players[player].ai {
+                        g.session.set_action(player, &a);
+                    }
                     let t0 = Instant::now();
                     g.session.step();
                     g.spent_ms[0] += t0.elapsed().as_secs_f64() * 1e3;

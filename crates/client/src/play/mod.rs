@@ -364,6 +364,8 @@ struct Shape {
     track: Option<Arc<(Vec<bytefield_sim::skeleton::M4>, Vec<(String, usize)>)>>,
     /// the parachute, skinned on its own skeleton
     chute: Option<skin::Chute>,
+    /// a track with no wheels playing its own state (a ship's flag: `FlagBlow`), as a control point's flag
+    wave: Option<skin::Looping>,
     /// a texture that runs with the engine (`setAnimatedTextureSpeed`): its own material
     scroll: Option<Scroll>,
     /// a wheel: its radius, how far it has turned (radians)
@@ -426,6 +428,8 @@ pub(crate) struct SkinFrames {
     arms: bool,
     /// lit by the mesh's own normals, as the skinning shader does (`skin::write_arms`)
     rest_normals: bool,
+    /// a soldier in a seat, lit with his normals the other way (`skin::write_arms`)
+    seated: bool,
     skin: Arc<skin::MaterialSkin>,
     mesh: Handle<Mesh>,
     prev: Vec<[f32; 3]>,
@@ -542,8 +546,9 @@ impl Plugin for PlayPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<crate::effects::Effects>()
             .init_resource::<crate::lights::Flashes>()
+            .init_resource::<crate::decals::Decals>()
             .init_resource::<Burning>()
-            .add_systems(Update, (gather, chat_box, step, crate::replay::check, triggers, armor_fx, crate::effects::level_effects, (interpolate, scroll_textures, camera, scope, cockpit_bars), crate::effects::update.in_set(crate::effects::EffectsUpdate), crate::lights::update).chain().distributive_run_if(resource_exists::<Game>));
+            .add_systems(Update, (gather, chat_box, step, crate::replay::check, triggers, armor_fx, crate::effects::level_effects, (interpolate, scroll_textures, camera, scope, cockpit_bars), crate::effects::update.in_set(crate::effects::EffectsUpdate), crate::lights::update, crate::decals::update).chain().distributive_run_if(resource_exists::<Game>));
     }
 }
 

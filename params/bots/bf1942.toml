@@ -1,0 +1,4 @@
+# Battlefield 1942's layer of the bots' named parameters (and its expansions'), over the global layer. Compiled into the program.
+# Empty until the learning loop has a tuned set for this mod.
+about = "bf1942 layer: nothing tuned yet"
+[params]

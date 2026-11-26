@@ -17,13 +17,14 @@ pub mod vecmath;
 mod no_better_bots;
 pub mod dumb;
 pub mod quality;
+pub mod round_events;
 pub mod input;
 pub mod anim;
 pub mod bot_api;
-pub mod bots2;
-pub mod bots3;
+pub mod bots;
 pub mod conquest;
 pub mod contact;
+pub mod cover;
 pub mod craft;
 pub mod create;
 pub mod ctf;
@@ -41,6 +42,7 @@ pub mod kitpart;
 pub mod ladder;
 pub mod mover;
 pub mod navgen;
+pub mod navmesh;
 pub mod obstacle;
 pub mod players;
 pub mod portal;
@@ -87,7 +89,7 @@ pub const REUSE_AFTER: f64 = 60.0;
 type ObstacleCache = std::collections::HashMap<String, Option<(Vec<std::sync::Arc<obstacle::FaceMesh>>, [[f32; 3]; 2], [[f32; 3]; 2])>>;
 
 /// `GeometryTemplate.scale`: one number or `x/y/z`; what cannot be read or is not positive counts as 1.
-fn parse_scale(v: &str) -> [f32; 3] {
+pub fn parse_scale(v: &str) -> [f32; 3] {
     let p: Vec<f32> = v.split('/').filter_map(|x| x.trim().parse().ok()).collect();
     match p[..] {
         [k] if k > 0.0 => [k; 3],
@@ -163,6 +165,8 @@ pub struct World {
     physics_boxes: std::sync::Mutex<std::collections::HashMap<String, Option<[[f32; 3]; 2]>>>,
     /// [`World::bounding_radius`] by template: the AI's kit asks for its projectiles' every tick
     bounding_radii: std::sync::Mutex<std::collections::HashMap<String, f32>>,
+    /// [`Sim::round_share`] by weapon and vehicle template
+    round_shares: std::sync::Mutex<std::collections::HashMap<(String, String), [f32; 3]>>,
     /// the obstacles in each projectile template's tree ([`World::carried_obstacles`])
     carried: std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<Vec<obstacle::Obstacle>>>>,
     materials: std::sync::OnceLock<contact::Materials>,
@@ -172,6 +176,12 @@ pub struct World {
     nav_maps: [std::sync::OnceLock<Option<std::sync::Arc<bytefield_formats::pathmap::PathMap>>>; 2],
     /// the game play mode (`GPM_CQ`, `GPM_CTF`…: `session::game_play_mode`)
     pub mode: String,
+    /// the game's tree it was loaded from (the navigation mesh's cache lives next to it)
+    pub game: std::path::PathBuf,
+    /// the walkable-surface navigation mesh for a soldier, built or read from the cache on first use ([`World::navmesh`])
+    navmesh: std::sync::OnceLock<std::sync::Arc<navmesh::NavMesh>>,
+    /// the cover points over the mesh, on first use ([`World::cover_points`])
+    cover: std::sync::OnceLock<std::sync::Arc<cover::CoverPoints>>,
 }
 
 impl World {
@@ -185,12 +195,86 @@ impl World {
         // a reference run of the original)
         vfs.mount_level_assets(&dir);
         Ok(World {
-            vfs, db, level, obstacles: Default::default(), obstacle_grid: Default::default(), physics_boxes: Default::default(), bounding_radii: Default::default(), carried: Default::default(), materials: Default::default(), animations: Default::default(), sectors: Default::default(), nav_maps: Default::default(), mode: session::game_play_mode(mode).to_string(),
+            vfs, db, level, obstacles: Default::default(), obstacle_grid: Default::default(), physics_boxes: Default::default(), bounding_radii: Default::default(), round_shares: Default::default(), carried: Default::default(), materials: Default::default(), animations: Default::default(), sectors: Default::default(), nav_maps: Default::default(), mode: session::game_play_mode(mode).to_string(), game: game.to_path_buf(), navmesh: Default::default(), cover: Default::default(),
         })
     }
 
     pub fn height_at(&self, x: f64, z: f64) -> Option<f64> {
         self.level.height_at(x, z, Orientation::IDENTITY)
+    }
+
+    /// The walkable-surface navigation mesh for a soldier ([`navmesh::Params::infantry`]), read from the cache next to the
+    /// game's tree or built (and written there) the first time it is asked.
+    pub fn navmesh(&self) -> std::sync::Arc<navmesh::NavMesh> {
+        self.navmesh
+            .get_or_init(|| {
+                let p = navmesh::Params::infantry(self);
+                std::sync::Arc::new(navmesh::NavMesh::load_or_build(self, &p, 4, &navmesh::NavMesh::default_cache_dir(&self.game)).0)
+            })
+            .clone()
+    }
+
+    /// The level's cover points ([`cover::CoverPoints`]) over [`World::navmesh`], from the cache next to the game's tree (built and
+    /// written there the first time: a few seconds; `examples/cover_points` makes them beforehand).
+    pub fn cover_points(&self) -> std::sync::Arc<cover::CoverPoints> {
+        self.cover
+            .get_or_init(|| {
+                let mesh = self.navmesh();
+                std::sync::Arc::new(cover::CoverPoints::load_or_build(self, &mesh, 4, &cover::CoverPoints::default_cache_dir(&self.game)).0)
+            })
+            .clone()
+    }
+
+    /// Gives the level a mesh built elsewhere (a test's, over part of the map) in place of the cache's; only before the first
+    /// [`World::navmesh`]. Whether it was taken.
+    pub fn set_navmesh(&self, mesh: navmesh::NavMesh) -> bool {
+        self.navmesh.set(std::sync::Arc::new(mesh)).is_ok()
+    }
+
+    /// Whether the terrain (samples every 2 m, a little over the ground) or one of the level's objects that stop bullets hides `b`
+    /// from `a` ([`Sim::hidden`]: the AI's line of sight; static, so the cover points are made with it).
+    pub fn hidden(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+        let d: f32 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f32>().sqrt();
+        let n = (d / 2.0).ceil().max(1.0) as usize;
+        let terrain = (1..n).any(|i| {
+            let t = i as f32 / n as f32;
+            let p: [f32; 3] = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
+            self.height_at(p[0] as f64, p[2] as f64).is_some_and(|h| h as f32 > p[1] - 0.2)
+        });
+        if terrain {
+            return true;
+        }
+        let dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        // (only the obstacles along the line: the same ones in the same order)
+        thread_local!(static ALONG: std::cell::RefCell<Vec<u32>> = const { std::cell::RefCell::new(Vec::new()) });
+        let obstacles = self.obstacles();
+        ALONG.with_borrow_mut(|along| {
+            self.obstacle_grid().along(a, dir, along);
+            along.iter().map(|&i| &obstacles[i as usize]).filter(|o| !o.projectiles_pass && crate::projectile::segment_near_sphere(a, dir, o.center, o.radius + 1.0)).any(|o| {
+                crate::obstacle::pick_lod(&o.lods, 1).is_some_and(|mesh| crate::obstacle::segment_blocked_skipping(mesh, &o.rows, o.pos, o.scale, a, dir, false, Some(crate::projectile::NON_SOLID_MATERIAL)))
+            })
+        })
+    }
+
+    /// Whether a soldier walking straight from `a` to `b` meets a wall: the terrain, or the faces a soldier collides with (LOD
+    /// 1) seen from either side ([`bot_api::BotView::walk_blocked`]).
+    pub fn walk_blocked(&self, a: [f32; 3], b: [f32; 3]) -> bool {
+        let d: f32 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum::<f32>().sqrt();
+        let n = (d / 2.0).ceil().max(1.0) as usize;
+        if (1..=n).any(|i| {
+            let t = i as f32 / n as f32;
+            let p: [f32; 3] = std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t);
+            self.height_at(p[0] as f64, p[2] as f64).is_some_and(|h| h as f32 > p[1])
+        }) {
+            return true;
+        }
+        let dir = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let obstacles = self.obstacles();
+        let mut along = Vec::new();
+        self.obstacle_grid().along(a, dir, &mut along);
+        along.iter().map(|&i| &obstacles[i as usize]).filter(|o| crate::projectile::segment_near_sphere(a, dir, o.center, o.radius + 1.0)).any(|o| {
+            crate::obstacle::pick_lod(&o.lods, crate::contact::faces_lod(0.5)).is_some_and(|mesh| crate::obstacle::segment_blocked_skipping(mesh, &o.rows, o.pos, o.scale, a, dir, true, None))
+        })
     }
 
     /// The geometry the engine's physics uses for an object template (`findLodGeometry`):
@@ -400,6 +484,15 @@ impl World {
     /// `Object.geometry.scale`. Static objects only: vehicles are not in it. Built once.
     pub fn obstacles(&self) -> &[obstacle::Obstacle] {
         self.obstacles.get_or_init(|| self.build_obstacles())
+    }
+
+    /// Adds obstacles to the level's (synthetic ones: test steps, ramps, bridges); before a [`Sim`] is made on the world.
+    pub fn push_obstacles(&mut self, extra: Vec<obstacle::Obstacle>) {
+        let mut all = self.obstacles().to_vec();
+        all.extend(extra);
+        self.obstacles = std::sync::OnceLock::from(all);
+        self.obstacle_grid = Default::default();
+        self.navmesh = Default::default();
     }
 
     /// [`World::obstacles`] by the ground they stand on, with the margin of the AI's lines ([`Sim::hidden`]).
@@ -658,12 +751,17 @@ impl World {
             .collect();
         let model = vehicle::model(&self.db, template);
         Some(mover::Vehicle {
-            template: template.to_string(),
-            craft,
-            contacts: self.contactors(template),
-            radius: self.bounding_radius(template),
+            body: mover::Body {
+                template: template.to_string(),
+                craft,
+                contacts: self.contactors(template),
+                radius: self.bounding_radius(template),
+                id: 0,
+                solved: false,
+                fixed: !self.is_mobile(template),
+                physics_off: false,
+            },
             movement: None,
-            id: 0,
             armor: self.db.object_template(template).and_then(damage::ArmorTemplate::from_template).map(damage::Armor::new),
             removed: false,
             gone_since: None,
@@ -679,9 +777,6 @@ impl World {
             },
             weapons,
             shots: Vec::new(),
-            solved: false,
-            fixed: !self.is_mobile(template),
-            physics_off: false,
         })
     }
 
@@ -1188,7 +1283,7 @@ impl<'w> Sim<'w> {
     pub fn players(&self) -> Vec<conquest::Player> {
         self.vehicles
             .iter()
-            .filter(|v| v.team != 0 && !v.removed && v.is_soldier() && v.armor.as_ref().is_none_or(|a| !a.destroyed))
+            .filter(|v| v.team != 0 && !v.removed && v.has_soldier_contact() && v.armor.as_ref().is_none_or(|a| !a.destroyed))
             .map(|v| (v.team, v.craft.body.pos))
             .collect()
     }
@@ -1241,7 +1336,7 @@ impl<'w> Sim<'w> {
         // the soldiers see the world time of the frame (`mWorldTime`)
         let wt = if self.round.playing { self.clock.time } else { 0.0 };
         for v in self.vehicles.iter_mut() {
-            if let Some(m) = v.movement.as_mut() {
+            if let Some(m) = v.soldier_mut() {
                 m.world_time = wt;
             }
         }
@@ -1410,7 +1505,7 @@ impl<'w> Sim<'w> {
         let env = self.world.surroundings(&carried);
         mover::check_all(&mut self.vehicles, &env, dt);
         mover::solve_all(&mut self.vehicles, dt);
-        for v in self.vehicles.iter_mut().filter(|v| v.in_world() && v.movement.is_none()) {
+        for v in self.vehicles.iter_mut().filter(|v| v.in_world() && v.soldier().is_none()) {
             let g = env.ground;
             // The engine's update handling runs with the engine still off (set by `handleMessage` 4 or 0x13, entering):
             // rpm 0, the gear timer down a step, and the load the collision pass just left taken and zeroed (the
@@ -1450,7 +1545,7 @@ impl<'w> Sim<'w> {
         if !v.in_world() || v.removed || v.entry.inside.is_some() {
             return false;
         }
-        if let Some(m) = v.movement.as_mut() {
+        if let Some(m) = v.soldier_mut() {
             m.world_time = wt;
         }
         v.update_parts(dt, env.ground);
@@ -1463,7 +1558,7 @@ impl<'w> Sim<'w> {
             return true;
         }
         // its shots are the server's to make
-        if let Some(m) = one[0].movement.as_mut() {
+        if let Some(m) = one[0].soldier_mut() {
             m.shots.clear();
             m.mark = None;
         }
@@ -1483,7 +1578,7 @@ impl<'w> Sim<'w> {
     pub fn fire_remote(&mut self, i: usize) -> bool {
         let v = &mut self.vehicles[i];
         let Some(m) = v.movement.as_mut().filter(|m| m.weapon.is_some()) else { return false };
-        m.fire(&v.craft.body, rigid::GRAVITY_Y);
+        m.fire(&v.body.craft.body, rigid::GRAVITY_Y);
         self.take_shots();
         true
     }
@@ -1495,11 +1590,11 @@ impl<'w> Sim<'w> {
     /// projectile: it only spends its rounds). (The server's order is its object manager's query;
     /// here, the soldiers' order.)
     fn use_medpacks(&mut self) {
-        let hurt = |v: &mover::Vehicle| v.in_world() && v.movement.is_some() && v.armor.as_ref().is_some_and(|a| !a.destroyed && a.hp < a.max_hp);
-        let medics: Vec<usize> = self.vehicles.iter().enumerate().filter(|(_, v)| v.movement.as_ref().is_some_and(|m| m.medpack)).map(|(i, _)| i).collect();
+        let hurt = |v: &mover::Vehicle| v.in_world() && v.soldier().is_some() && v.armor.as_ref().is_some_and(|a| !a.destroyed && a.hp < a.max_hp);
+        let medics: Vec<usize> = self.vehicles.iter().enumerate().filter(|(_, v)| v.soldier().is_some_and(|m| m.medpack)).map(|(i, _)| i).collect();
         for i in medics {
             let p = self.vehicles[i].craft.body.pos;
-            let [distance, factor, self_factor] = self.vehicles[i].movement.as_ref().unwrap().heal;
+            let [distance, factor, self_factor] = self.vehicles[i].soldier().unwrap().heal;
             let other = self.vehicles.iter().enumerate().find(|&(j, v)| {
                 let q = v.craft.body.pos;
                 j != i && hurt(v) && (q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2) + (q[2] - p[2]).powi(2) < distance * distance
@@ -1522,7 +1617,7 @@ impl<'w> Sim<'w> {
                 let g = crate::rigid::GRAVITY_Y;
                 let v = &mut self.vehicles[i];
                 let body = v.craft.body.clone();
-                v.movement.as_mut().unwrap().medpack_fired(&body, g);
+                v.soldier_mut().unwrap().medpack_fired(&body, g);
             }
         }
     }
@@ -1538,11 +1633,11 @@ impl<'w> Sim<'w> {
     /// hears the fire message (it spends its rounds). (The server's order is its object
     /// manager's query; here, the projectiles' and the vehicles'.)
     fn use_repairpacks(&mut self) {
-        let engineers: Vec<usize> = self.vehicles.iter().enumerate().filter(|(_, v)| v.movement.as_ref().is_some_and(|m| m.repairpack)).map(|(i, _)| i).collect();
+        let engineers: Vec<usize> = self.vehicles.iter().enumerate().filter(|(_, v)| v.soldier().is_some_and(|m| m.repairpack)).map(|(i, _)| i).collect();
         let d2 = |a: [f32; 3], b: [f32; 3]| (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2);
         for i in engineers {
             let p = self.vehicles[i].craft.body.pos;
-            let m = self.vehicles[i].movement.as_ref().unwrap();
+            let m = self.vehicles[i].soldier().unwrap();
             let [reach, factor, disarm] = m.repair;
             let used = if m.pose() == 1 {
                 let found = self.projectiles.iter().position(|q| {
@@ -1552,7 +1647,7 @@ impl<'w> Sim<'w> {
                 if let Some(k) = found {
                     let name = self.projectiles[k].template.name.clone();
                     let slot = if name.eq_ignore_ascii_case("ExpPackProjectile") { 4 } else { 5 };
-                    let m = self.vehicles[i].movement.as_mut().unwrap();
+                    let m = self.vehicles[i].soldier_mut().unwrap();
                     if let Some(w) = m.weapon.iter_mut().chain(m.stowed.iter_mut()).find(|w| w.template.item_index == slot && w.template.projectile.eq_ignore_ascii_case(&name)) {
                         w.reload_ammo(1);
                     }
@@ -1565,7 +1660,7 @@ impl<'w> Sim<'w> {
                 let mut best: Option<(usize, f32, f32)> = None;
                 for (j, v) in self.vehicles.iter().enumerate() {
                     let Some(a) = v.armor.as_ref() else { continue };
-                    if j == i || v.movement.is_some() || !v.in_world() || !(v.team == 0 || v.team == team) {
+                    if j == i || v.soldier().is_some() || !v.in_world() || !(v.team == 0 || v.team == team) {
                         continue;
                     }
                     let d = d2(v.craft.body.pos, p);
@@ -1588,7 +1683,7 @@ impl<'w> Sim<'w> {
                     let a = self.vehicles[j].armor.as_ref().unwrap();
                     let c = a.template.critical_damage;
                     let status = (a.hp - c) / (a.max_hp - c);
-                    self.vehicles[i].movement.as_mut().unwrap().repair_status = status;
+                    self.vehicles[i].soldier_mut().unwrap().repair_status = status;
                     self.journal.repairs += 1;
                 }
                 best.is_some()
@@ -1597,7 +1692,7 @@ impl<'w> Sim<'w> {
                 let g = crate::rigid::GRAVITY_Y;
                 let v = &mut self.vehicles[i];
                 let body = v.craft.body.clone();
-                v.movement.as_mut().unwrap().medpack_fired(&body, g);
+                v.soldier_mut().unwrap().medpack_fired(&body, g);
             }
         }
     }
@@ -1610,7 +1705,7 @@ impl<'w> Sim<'w> {
         let mut shots = Vec::new();
         let mut from_vehicles = Vec::new();
         for (i, v) in self.vehicles.iter_mut().enumerate() {
-            if let Some(m) = v.movement.as_mut() {
+            if let Some(m) = v.soldier_mut() {
                 shots.extend(m.shots.drain(..).map(|s| (i, s)));
             }
             from_vehicles.extend(v.shots.drain(..).map(|s| (i, s)));
@@ -1641,11 +1736,11 @@ impl<'w> Sim<'w> {
             // pool's (far: the damage falls to its minimum)
             if let Some(k) = p {
                 // the mines and charges take their slot in the weapon's pool
-                if let Some(w) = self.vehicles[i].movement.as_ref().and_then(|m| m.weapon.as_ref()) {
+                if let Some(w) = self.vehicles[i].soldier().and_then(|m| m.weapon.as_ref()) {
                     let (name, mag) = (w.template.name.clone(), w.template.mag_size);
                     self.pool_shot(i, &name, mag, k);
                 }
-                let player = self.vehicles[i].movement.as_ref().is_some_and(|m| m.has_player);
+                let player = self.vehicles[i].soldier().is_some_and(|m| m.has_player);
                 if player {
                     self.projectiles[k].owner = Some(i);
                 } else {
@@ -1741,5 +1836,18 @@ mod log_tests {
         let new: Vec<u32> = vec![0, 1];
         assert_eq!(log_since(&new, 0, &mut seen), [0, 1]);
         assert_eq!(seen, 2);
+    }
+}
+
+#[cfg(test)]
+mod parse_scale_tests {
+    use super::parse_scale;
+
+    #[test]
+    fn scale_one_number_or_three() {
+        assert_eq!(parse_scale("0.3"), [0.3; 3]);
+        assert_eq!(parse_scale("0.3/1/1"), [0.3, 1.0, 1.0]);
+        assert_eq!(parse_scale("0/1/1"), [1.0; 3]);
+        assert_eq!(parse_scale("x"), [1.0; 3]);
     }
 }

@@ -50,7 +50,7 @@ struct Rig<'w> {
     /// the stick it has learnt to hold to keep the nose where it wants it
     trim: f32,
     /// a fighting pilot's hands
-    stick: bytefield_sim::bots3::body::dogfight::Stick,
+    stick: bytefield_sim::bots::body::dogfight::Stick,
     t: f32,
 }
 
@@ -91,7 +91,7 @@ impl<'w> Rig<'w> {
 
     /// One frame with these axes held. Returns how far it went over the map: it is put back over the middle.
     fn step(&mut self, axes: &[(usize, f32)]) -> [f32; 2] {
-        self.s.vehicles[self.soldier].movement.as_mut().unwrap().set_input(axes);
+        self.s.vehicles[self.soldier].soldier_mut().unwrap().set_input(axes);
         self.s.step();
         self.t += DT;
         let b = &mut self.s.vehicles[self.craft].craft.body;
@@ -261,7 +261,7 @@ fn chase(w: &bytefield_sim::World, template: &str, radius: f32, speed: f32, abov
         // how the line to it turns
         let rel = sub(tv, vel);
         let turn: V3 = [to[1] * rel[2] - to[2] * rel[1], to[2] * rel[0] - to[0] * rel[2], to[0] * rel[1] - to[1] * rel[0]].map(|c| c / (range * range).max(1.0));
-        let up = bytefield_sim::bots3::body::dogfight::climbable(aim, rig.speed());
+        let up = bytefield_sim::bots::body::dogfight::climbable(aim, rig.speed());
         let climbing = up != aim;
         let (p, b, r) = if low { rig.point([f[0], 0.35, f[2]], [0.0; 3]) } else { rig.point(up, if climbing { [0.0; 3] } else { turn }) };
         // the throttle: not to run past it

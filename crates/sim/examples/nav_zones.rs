@@ -1,11 +1,11 @@
-//! Which zone of bots3's path grids (infantry and tank, `bots3::body::paths::Grid`) each point falls in: two points in different
-//! zones have no way between them, whatever the search does. For the census of the maps where bots3 does not play (why a squad
+//! Which zone of bots's path grids (infantry and tank, `bots::body::paths::Grid`) each point falls in: two points in different
+//! zones have no way between them, whatever the search does. For the census of the maps where bots does not play (why a squad
 //! never gets to a flag):
 //!   nav_zones <game> <mod> <level> x,z [x,z...]
 //! One line per point: `x,z infantry <zone> (the zones within 15 and 30 m) tank …` (0: a blocked cell; `-`: outside the map), then
 //! each grid's biggest zones. `NAV_WAY_TO=x,z,r`: the way on foot from each point to that circle ([`Grid::distances_to`]).
 use bytefield_sim::bot_api::Nav;
-use bytefield_sim::bots3::body::paths::Grid;
+use bytefield_sim::bots::body::paths::Grid;
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
@@ -14,7 +14,7 @@ fn main() {
         std::process::exit(2);
     }
     let w = bytefield_sim::World::load(std::path::Path::new(&a[1]), &a[2], &a[3], "conquest").expect("world");
-    let grids: Vec<(&str, Option<Grid>)> = [("infantry", Nav::Infantry), ("tank", Nav::Tank)].into_iter().map(|(n, k)| (n, w.nav_map(k).map(|m| Grid::from_map(&m)))).collect();
+    let grids: Vec<(&str, Option<Grid>)> = [("infantry", Nav::Infantry), ("tank", Nav::Tank)].into_iter().map(|(n, k)| (n, w.nav_map(k).map(|m| Grid::from_map(&m, w.nav_map_shipped(k))))).collect();
     // (`NAV_WAY_TO=x,z,r`: also the way on foot from each point to that circle, m, and how long building its field took)
     let way = std::env::var("NAV_WAY_TO").ok().map(|w| w.split(',').map(|x| x.parse::<f32>().expect("x,z,r")).collect::<Vec<f32>>()).and_then(|w| {
         let g = grids[0].1.as_ref()?;

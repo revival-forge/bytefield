@@ -48,7 +48,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let sun_tf = select(vec3(1.0), tf, light.ambient.w > 1.5);
     let k = 2.0 * min(light.ambient.rgb + light.diffuse.rgb * sun_tf * max(dot(pbr_input.N, light.sun.xyz), 0.0), vec3(1.0));
     var lit = vec4(from_screen(min(to_screen(base.rgb) * k, vec3(1.0)) * tf), base.a);
-    if light.ambient.w < 0.5 {
+    if light.ambient.w < -0.5 {
+        lit = base;
+    } else if light.ambient.w < 0.5 {
         lit = apply_pbr_lighting(pbr_input);
     }
     // (Bevy's frame to Refractor's mirrors z, the half turn mirrors x and z: x alone)

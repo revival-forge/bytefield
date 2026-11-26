@@ -1,0 +1,4 @@
+# The global layer of the bots' named parameters (crates/sim/src/bots/params.rs), over the defaults in the code and under each
+# mod's layer. Compiled into the program. Empty until the learning loop has a tuned set the user has promoted.
+about = "global layer: nothing tuned yet"
+[params]

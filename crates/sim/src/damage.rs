@@ -1080,6 +1080,48 @@ impl SpawnerState {
 }
 
 impl crate::Sim<'_> {
+    /// For the bots, level 3 (a person learns it by shooting): what one round of `weapon` (a `FireArms` template) takes off
+    /// vehicle `j` at a hit, as a share of its hit points, straight on and close (the angle and the distance only take off): its
+    /// projectile's damage against its collision faces (the damage table, the round's material against each face's), at the
+    /// best face and over all of them by area, and of its blast at the centre (a grenade's, a rocket's: the damage table, the
+    /// blast's material against the vehicle's own). All 0: it cannot hurt it. None: no such weapon, or a vehicle without armor.
+    pub fn round_share(&self, weapon: &str, j: usize) -> Option<[f32; 3]> {
+        let v = self.vehicles.get(j)?;
+        let armor = v.armor.as_ref()?;
+        let hp = armor.max_hp;
+        let key = (weapon.to_ascii_lowercase(), v.template.to_ascii_lowercase());
+        if let Some(s) = self.world.round_shares.lock().unwrap().get(&key) {
+            return Some(*s);
+        }
+        let w = self.world.weapon(weapon)?;
+        let p = self.world.projectile_template(&w.projectile)?;
+        let materials = self.world.materials();
+        let per_hit = materials.damage(p.damage.material);
+        let (mut best, mut sum, mut area) = (0.0f32, 0.0f32, 0.0f32);
+        for c in &v.contacts {
+            let Some(mesh) = crate::obstacle::pick_lod(&c.faces, 1) else { continue };
+            for f in &mesh.faces {
+                let at = |k: usize| mesh.vertices.get(f.v[k] as usize).copied().unwrap_or([0.0; 3]);
+                let (a, b) = (sub(at(1), at(0)), sub(at(2), at(0)));
+                let n = [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+                let s = 0.5 * dot(n, n).sqrt();
+                let d = materials.damage_mod(p.damage.material, f.material) * per_hit;
+                best = best.max(d);
+                sum += d * s;
+                area += s;
+            }
+        }
+        let blast = if p.damage.damage_type == 1 || p.damage.damage_type == 4 {
+            let own = if armor.template.material < 0 { u32::MAX } else { armor.template.material as u32 };
+            materials.damage_mod(p.damage.material2, own) * materials.damage(p.damage.material2)
+        } else {
+            0.0
+        };
+        let share = if hp > 0.0 { [best / hp, if area > 0.0 { sum / area / hp } else { 0.0 }, blast / hp] } else { [0.0; 3] };
+        self.world.round_shares.lock().unwrap().insert(key, share);
+        Some(share)
+    }
+
     /// `giveDamage` to vehicle `v` (and what follows: a destroyed one's wreck explodes).
     pub fn give_damage(&mut self, v: usize, amount: f32, source: Source) {
         // (a `remote` copy's damage is the server's: its own crashes, water and burning give none; [`Snapshot::write`] kills what the
@@ -1105,7 +1147,7 @@ impl crate::Sim<'_> {
             // The spring's message handling: under a destroyed object every spring's node keeps a quarter of its strength
             // and damping (the wreck sags; again on each destruction). GC's skiff wrecked on GC_BCanyon pushed 4 times the
             // original's on its wheels' first touch
-            for c in veh.contacts.iter_mut() {
+            for c in veh.body.contacts.iter_mut() {
                 if let Some(sp) = c.spring.as_mut() {
                     sp.strength *= WRECK_SPRING;
                     sp.damping *= WRECK_SPRING;
@@ -1118,18 +1160,18 @@ impl crate::Sim<'_> {
         // who is in it dies with it (`killPlayer`: out of the vehicle, the soldier destroyed and
         // given 100030; seen for the driver), before the wreck explodes
         // a soldier's death animation
-        if status == Some(Status::Destroyed) && self.vehicles[v].movement.is_some() {
+        if status == Some(Status::Destroyed) && self.vehicles[v].soldier().is_some() {
             let seated = self.vehicles.iter().any(|o| o.entry.occupants.contains(&Some(v)));
             let rows = self.vehicles[v].craft.body.rows;
-            if let Some(m) = self.vehicles[v].movement.as_mut() {
+            if let Some(m) = self.vehicles[v].soldier_mut() {
                 m.die(&rows, seated);
             }
         }
         // a hit it survives: off the ladder, and the upper body's flinch (same function; giveDamage
         // does nothing before the round is playing, and a bench's damage there shows nothing)
-        if self.round.playing && amount > 0.0 && status != Some(Status::Destroyed) && hp > 0.0 && self.vehicles[v].movement.is_some() {
+        if self.round.playing && amount > 0.0 && status != Some(Status::Destroyed) && hp > 0.0 && self.vehicles[v].soldier().is_some() {
             let veh = &mut self.vehicles[v];
-            let (body, m) = (&mut veh.craft.body, veh.movement.as_mut().unwrap());
+            let (body, m) = (&mut veh.body.craft.body, veh.movement.as_mut().unwrap());
             if m.climbing() {
                 m.stop_climbing(body);
             }
@@ -1184,7 +1226,7 @@ impl crate::Sim<'_> {
     /// vehicle's driver), or the one who got out of it under 2 s before (the PCO's last player and its time). The soldier stands for the player ([`crate::Sim::attacker`]).
     pub fn rammer(&self, j: usize) -> Option<usize> {
         let v = self.vehicles.get(j)?;
-        if v.movement.is_some() {
+        if v.soldier().is_some() {
             return self.players.iter().any(|p| p.soldier == Some(j)).then_some(j);
         }
         let player = |s: usize| self.players.iter().any(|p| p.soldier == Some(s));
@@ -1202,7 +1244,7 @@ impl crate::Sim<'_> {
         let Some(team) = by.and_then(|a| self.vehicles.get(a)).map(|v| v.team).filter(|t| (1..=2).contains(t)) else { return 1.0 };
         let Some(v) = self.vehicles.get(target).filter(|v| v.team == team) else { return 1.0 };
         let r = &self.rules;
-        match (v.movement.is_some(), splash) {
+        match (v.soldier().is_some(), splash) {
             (true, false) => r.server.soldier_ff,
             (false, false) => r.server.vehicle_ff,
             (true, true) => r.server.soldier_ff_splash,
@@ -1223,7 +1265,7 @@ impl crate::Sim<'_> {
         let seen: Vec<Option<f32>> = (0..self.vehicles.len())
             .map(|j| {
                 let v = &self.vehicles[j];
-                let m = v.movement.as_ref().filter(|_| !v.removed && v.armor.is_some())?;
+                let m = v.soldier().filter(|_| !v.removed && v.armor.is_some())?;
                 Some(soldier_seen(&self.world.level, self.world.obstacles(), &self.vehicles, j, e.center, v.craft.body.pos, m.pose()))
             })
             .collect();
@@ -1238,14 +1280,14 @@ impl crate::Sim<'_> {
             let soldier = seen[j].map(|f| (f, body.underwater > 0.0));
             let Some(mut b) = blast(&e, a, materials, body.pos, &body.rows, v.radius, true, ground_n, soldier) else { continue };
             b.damage *= ratios[j];
-            if v.movement.is_some()
+            if v.soldier().is_some()
                 && let Some((_, acc)) = b.push.as_mut()
             {
                 *acc = acc.map(|x| x * ratios[j]);
             }
             if let Some((point, acc)) = b.push {
                 // (`triggerFallingAnimation`: a soldier may fly for a moment)
-                if let Some(m) = v.movement.as_mut() {
+                if let Some(m) = v.soldier_mut() {
                     m.blasted_at = m.world_time;
                 }
                 v.craft.body.sleepiness = crate::rigid::FRAMES_BEFORE_SLEEP;
@@ -1274,7 +1316,7 @@ impl crate::Sim<'_> {
             if v.removed {
                 continue;
             }
-            let (pos, up, asleep, radius, soldier) = (v.craft.body.pos, v.craft.body.rows[1], v.craft.body.is_sleeping(), v.radius, v.is_soldier());
+            let (pos, up, asleep, radius, soldier) = (v.craft.body.pos, v.craft.body.rows[1], v.craft.body.is_sleeping(), v.radius, v.has_soldier_contact());
             let Some(a) = v.armor.as_mut() else { continue };
             let ground = contact::Ground::height_and_normal(level, pos[0], pos[2]);
             // a soldier in a seat has no physics of its own: not in the water (a submarine's
@@ -1292,7 +1334,7 @@ impl crate::Sim<'_> {
             }
             let v = &mut self.vehicles[i];
             let Some(a) = v.armor.as_mut() else { continue };
-            a.in_water |= v.craft.body.underwater > 0.0 || v.craft.afloat;
+            a.in_water |= v.body.craft.body.underwater > 0.0 || v.body.craft.afloat;
             a.end_update();
             // The armor's play effect on a destroyed vehicle: the effects of threshold −1 in the water, 0
             // if not (the client's). Their emitters hang from the vehicle: an `IsSpawnEffect` one
@@ -1311,6 +1353,9 @@ impl crate::Sim<'_> {
     /// works out a crash once a second per other object (`isInColList`).
     // (a vehicle created into a building, a MiG-29's wing in El_Alamein's allied base, is pushed out with 33 m/s up and takes 215 of crash on
     // its first step, here and in the original's server, with Object.create or from a spawner)
+    // (one born sunk into the terrain, GC's Avenger created 0.6 m over GC_Hoth's snow with its wheels 3.5 m under its origin, is thrown
+    // up and destroyed on its first step here and in the original's server, step for step; the TIE Interceptor so created is not.
+    // The original under Wine showed a sunk Avenger whole from a spawner: the client's side, not this)
     pub(crate) fn crash_damage(&mut self) {
         let materials = self.world.materials();
         let mut give = Vec::new();
@@ -1344,7 +1389,7 @@ impl crate::Sim<'_> {
                     Other::Part(j, _) => self.vehicles.get(j).and_then(|v| v.armor.as_ref()).map_or(1.0, |a| a.template.damage_mod),
                     _ => 1.0,
                 };
-                let soldier = self.vehicles[i].is_soldier();
+                let soldier = self.vehicles[i].has_soldier_contact();
                 let own_vel = self.vehicles[i].craft.body.vel;
                 // the other part's physics node: the root's moves with the body; a child's (the
                 // T34's `T34Complex`) is still (dmg_t34_soldier: its hit gives nothing)
@@ -1354,7 +1399,7 @@ impl crate::Sim<'_> {
                 };
                 // the open parachute is one of its active kit parts, and the least damping of
                 // them counts: under 1/h (soldier_parachute: 119 m, no damage), taken as 0
-                let m = self.vehicles[i].movement.as_ref();
+                let m = self.vehicles[i].soldier();
                 let parts = m.and_then(|m| m.kit_parts.iter().map(|p| p.t.damping).reduce(f32::min)).unwrap_or(1.0);
                 let damping = if m.is_some_and(|m| m.parachute) { 0.0 } else { parts };
                 let a = self.vehicles[i].armor.as_mut().unwrap();
@@ -1408,7 +1453,7 @@ impl crate::Sim<'_> {
         {
             skip = Some(vi);
             if let Some(b) = hit.bone
-                && let Some(m) = self.vehicles[vi].movement.as_mut()
+                && let Some(m) = self.vehicles[vi].soldier_mut()
             {
                 m.hit_bone(b, hit.normal);
             }
@@ -1788,18 +1833,18 @@ mod medpack {
         let p = s.vehicles[m].craft.body.pos;
         s.vehicles[h].craft.body.pos = [p[0] + 1.5, p[1], p[2]];
         // the pack (slot 5) out, then fire held
-        s.vehicles[m].movement.as_mut().unwrap().set_input(&[(axis::WEAPON1 + 4, 1.0)]);
+        s.vehicles[m].soldier_mut().unwrap().set_input(&[(axis::WEAPON1 + 4, 1.0)]);
         for _ in 0..30 {
             s.step();
         }
-        let w = s.vehicles[m].movement.as_ref().unwrap().weapon.as_ref().unwrap();
+        let w = s.vehicles[m].soldier().unwrap().weapon.as_ref().unwrap();
         assert!(w.template.name.eq_ignore_ascii_case("MedPack"), "{}", w.template.name);
         let rounds = w.total_ammo();
-        s.vehicles[m].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
+        s.vehicles[m].soldier_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
         for _ in 0..10 {
             s.step();
         }
-        let w = s.vehicles[m].movement.as_ref().unwrap().weapon.as_ref().unwrap();
+        let w = s.vehicles[m].soldier().unwrap().weapon.as_ref().unwrap();
         assert_eq!(w.total_ammo(), rounds, "nobody hurt: the pack does not fire");
         s.give_damage(h, 10.0, super::Source::Hit);
         let before = s.vehicles[h].armor.as_ref().unwrap().hp;
@@ -1809,7 +1854,7 @@ mod medpack {
         let after = s.vehicles[h].armor.as_ref().unwrap().hp;
         eprintln!("hp {before} -> {after}");
         assert!((after - before - 7.5).abs() < 0.2, "hp {before} -> {after}");
-        assert!(s.vehicles[m].movement.as_ref().unwrap().weapon.as_ref().unwrap().total_ammo() < rounds);
+        assert!(s.vehicles[m].soldier().unwrap().weapon.as_ref().unwrap().total_ammo() < rounds);
         // the other away, the medic hurt: himself
         s.vehicles[h].craft.body.pos = [p[0] + 50.0, p[1], p[2]];
         s.give_damage(m, 10.0, super::Source::Hit);
@@ -1840,11 +1885,11 @@ mod repairpack {
             }
         }
         let e = s.players[e].soldier.unwrap();
-        s.vehicles[e].movement.as_mut().unwrap().set_input(&[(axis::WEAPON1 + 5, 1.0)]);
+        s.vehicles[e].soldier_mut().unwrap().set_input(&[(axis::WEAPON1 + 5, 1.0)]);
         for _ in 0..30 {
             s.step();
         }
-        let w = s.vehicles[e].movement.as_ref().unwrap().weapon.as_ref().unwrap();
+        let w = s.vehicles[e].soldier().unwrap().weapon.as_ref().unwrap();
         assert!(w.template.name.eq_ignore_ascii_case("RepairPack"), "{}", w.template.name);
         e
     }
@@ -1870,12 +1915,12 @@ mod repairpack {
         let r = s.vehicles[tank].radius;
         s.vehicles[tank].craft.body.pos = [p[0] + r + 1.0, p[1] + 0.5, p[2]];
         s.vehicles[tank].fixed = true;
-        let rounds = s.vehicles[e].movement.as_ref().unwrap().weapon.as_ref().unwrap().total_ammo();
-        s.vehicles[e].movement.as_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
+        let rounds = s.vehicles[e].soldier().unwrap().weapon.as_ref().unwrap().total_ammo();
+        s.vehicles[e].soldier_mut().unwrap().set_input(&[(axis::FIRE, 1.0)]);
         for _ in 0..10 {
             s.step();
         }
-        assert_eq!(s.vehicles[e].movement.as_ref().unwrap().weapon.as_ref().unwrap().total_ammo(), rounds, "whole: the wrench does not fire");
+        assert_eq!(s.vehicles[e].soldier().unwrap().weapon.as_ref().unwrap().total_ammo(), rounds, "whole: the wrench does not fire");
         let max = s.vehicles[tank].armor.as_ref().unwrap().max_hp;
         s.give_damage(tank, max * 0.3, super::Source::Hit);
         let before = s.vehicles[tank].armor.as_ref().unwrap().hp;
@@ -1884,10 +1929,10 @@ mod repairpack {
         }
         let a = s.vehicles[tank].armor.as_ref().unwrap();
         assert!((a.hp - before - 4.5).abs() < 0.05, "hp {before} -> {}", a.hp);
-        let status = s.vehicles[e].movement.as_ref().unwrap().repair_status;
+        let status = s.vehicles[e].soldier().unwrap().repair_status;
         let c = a.template.critical_damage;
         assert!((status - (a.hp - c) / (a.max_hp - c)).abs() < 1e-5, "{status}");
-        assert!(s.vehicles[e].movement.as_ref().unwrap().weapon.as_ref().unwrap().total_ammo() < rounds);
+        assert!(s.vehicles[e].soldier().unwrap().weapon.as_ref().unwrap().total_ammo() < rounds);
         assert_eq!(s.journal.repairs, 30);
         // the other team's: nothing
         s.vehicles[tank].team = 2;
@@ -1945,18 +1990,18 @@ mod repairpack {
         let w = crate::World::load(&game, "bf1942", "Berlin", "coop").unwrap();
         let mut s = crate::Sim::new(&w, 1.0 / 30.0);
         let e = engineer(&mut s);
-        let mines = |s: &crate::Sim| s.vehicles[e].movement.as_ref().unwrap().stowed.iter().find(|w| w.template.name.eq_ignore_ascii_case("Landmine")).unwrap().total_ammo();
+        let mines = |s: &crate::Sim| s.vehicles[e].soldier().unwrap().stowed.iter().find(|w| w.template.name.eq_ignore_ascii_case("Landmine")).unwrap().total_ammo();
         let full = mines(&s);
-        s.vehicles[e].movement.as_mut().unwrap().stowed.iter_mut().find(|w| w.template.name.eq_ignore_ascii_case("Landmine")).unwrap().mags[0] -= 1;
-        s.vehicles[e].movement.as_mut().unwrap().set_input(&[(axis::CROUCH, 1.0)]);
+        s.vehicles[e].soldier_mut().unwrap().stowed.iter_mut().find(|w| w.template.name.eq_ignore_ascii_case("Landmine")).unwrap().mags[0] -= 1;
+        s.vehicles[e].soldier_mut().unwrap().set_input(&[(axis::CROUCH, 1.0)]);
         for _ in 0..30 {
             s.step();
         }
-        assert_eq!(s.vehicles[e].movement.as_ref().unwrap().pose(), 1);
+        assert_eq!(s.vehicles[e].soldier().unwrap().pose(), 1);
         let p = s.vehicles[e].craft.body.pos;
         let shot = crate::projectile::Shot { pos: [p[0] + 1.0, p[1], p[2]], rows: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]], vel: [0.0; 3], rotvel: [0.0; 3] };
         let mine = s.add_projectile("LandmineProjectile", &shot).unwrap();
-        s.vehicles[e].movement.as_mut().unwrap().set_input(&[(axis::CROUCH, 1.0), (axis::FIRE, 1.0)]);
+        s.vehicles[e].soldier_mut().unwrap().set_input(&[(axis::CROUCH, 1.0), (axis::FIRE, 1.0)]);
         s.step();
         s.step();
         assert_eq!(s.projectiles[mine].end, Some(crate::projectile::End::Removed));
@@ -1974,19 +2019,19 @@ mod repairpack {
         let w = crate::World::load(&game, "bf1942", "Berlin", "coop").unwrap();
         let mut s = crate::Sim::new(&w, 1.0 / 30.0);
         let e = engineer(&mut s);
-        let held = |s: &crate::Sim| s.vehicles[e].movement.as_ref().unwrap().weapon.as_ref().unwrap().template.name.clone();
-        s.vehicles[e].movement.as_mut().unwrap().set_input(&[(axis::WEAPON1 + 4, 1.0)]);
+        let held = |s: &crate::Sim| s.vehicles[e].soldier().unwrap().weapon.as_ref().unwrap().template.name.clone();
+        s.vehicles[e].soldier_mut().unwrap().set_input(&[(axis::WEAPON1 + 4, 1.0)]);
         for _ in 0..30 {
             s.step();
         }
         assert!(held(&s).eq_ignore_ascii_case("Landmine"), "{}", held(&s));
-        s.vehicles[e].movement.as_mut().unwrap().weapon.as_mut().unwrap().mags.iter_mut().for_each(|m| *m = 0);
-        s.vehicles[e].movement.as_mut().unwrap().set_input(&[]);
+        s.vehicles[e].soldier_mut().unwrap().weapon.as_mut().unwrap().mags.iter_mut().for_each(|m| *m = 0);
+        s.vehicles[e].soldier_mut().unwrap().set_input(&[]);
         for _ in 0..30 {
             s.step();
         }
         assert!(!held(&s).eq_ignore_ascii_case("Landmine"), "still the mines");
-        s.vehicles[e].movement.as_mut().unwrap().set_input(&[(axis::WEAPON1 + 4, 1.0)]);
+        s.vehicles[e].soldier_mut().unwrap().set_input(&[(axis::WEAPON1 + 4, 1.0)]);
         for _ in 0..30 {
             s.step();
         }
@@ -2016,7 +2061,7 @@ mod friendly_fire {
             }
         }
         let [a, f, e] = [0, 1, 2].map(|k| s.players[ps[k]].soldier.unwrap());
-        let tank = s.vehicles.iter().position(|v| v.movement.is_none() && v.armor.is_some() && !v.removed).unwrap();
+        let tank = s.vehicles.iter().position(|v| v.soldier().is_none() && v.armor.is_some() && !v.removed).unwrap();
         s.rules.server = ServerRules { soldier_ff: 0.5, vehicle_ff: 0.25, soldier_ff_splash: 0.0, vehicle_ff_splash: 0.75, ..Default::default() };
         assert_eq!(s.friendly_ratio(Some(a), f, false), 0.5);
         assert_eq!(s.friendly_ratio(Some(a), e, false), 1.0);
@@ -2091,7 +2136,7 @@ mod friendly_fire {
         let h = hp(&s, a);
         hit(&mut s, f, 0.01, Source::Hit);
         assert_eq!(hp(&s, a), h, "at or under 0.01, none");
-        let tank = s.vehicles.iter().position(|v| v.movement.is_none() && v.armor.is_some() && !v.removed).unwrap();
+        let tank = s.vehicles.iter().position(|v| v.soldier().is_none() && v.armor.is_some() && !v.removed).unwrap();
         s.vehicles[tank].team = 1;
         hit(&mut s, tank, 10.0, Source::Hit);
         assert_eq!(hp(&s, a), h, "an empty vehicle of the team is nobody's");

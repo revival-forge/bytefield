@@ -36,7 +36,7 @@ impl crate::Sim<'_> {
     /// The weapon's place scout camera for every soldier whose binoculars fired this frame.
     pub(crate) fn place_scout_marks(&mut self) {
         for i in 0..self.vehicles.len() {
-            let Some(m) = self.vehicles[i].movement.as_mut() else { continue };
+            let Some(m) = self.vehicles[i].soldier_mut() else { continue };
             let Some(shot) = m.mark.take() else { continue };
             // (`Fire` with no player returns before it)
             if !m.has_player {
@@ -52,7 +52,7 @@ impl crate::Sim<'_> {
                 self.projectile_detonated(&p);
             }
             let Some(k) = self.add_projectile(&template, &shot) else { continue };
-            if let Some(w) = self.vehicles[i].movement.as_mut().and_then(|m| m.weapon.as_mut()) {
+            if let Some(w) = self.vehicles[i].soldier_mut().and_then(|m| m.weapon.as_mut()) {
                 w.mark = Some(k);
             }
             // its own velocity is never set: `createProjectile` and the matrix only

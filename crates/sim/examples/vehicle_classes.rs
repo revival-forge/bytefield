@@ -15,7 +15,7 @@ fn main() {
         s.round.playing = true;
         s.start_conquest();
         let mut seen: BTreeMap<String, String> = BTreeMap::new();
-        for v in s.vehicles.iter().filter(|v| v.in_world() && !v.is_soldier() && !v.entry.seats.is_empty()) {
+        for v in s.vehicles.iter().filter(|v| v.in_world() && !v.has_soldier_contact() && !v.entry.seats.is_empty()) {
             use bytefield_sim::craft::Kind;
             let engines: Vec<u32> = v.craft.parts.iter().filter_map(|p| if let Kind::Engine(e) = &p.kind { Some(e.engine_type) } else { None }).collect();
             let bundles = v.craft.parts.iter().filter(|p| p.bundle.is_some()).count();

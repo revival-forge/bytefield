@@ -113,6 +113,35 @@ impl ShadowSampler {
         (self.cols, self.rows, self.patch, self.origin)
     }
 
+    /// The baked shadow as a mask over the colour tiles' grid, for the GPU (an enhanced-profile need: what the terrain's
+    /// relief keeps out of): `side` texels a tile across, each the share of its bits in shadow, 0–255; columns × side
+    /// wide, rows × side high, z outer as the tiles; where it starts (x, z) and how far it reaches, in metres. A tile
+    /// without bits is lit.
+    pub fn baked_mask(&self, side: usize) -> (usize, usize, Vec<u8>, [f64; 2], [f64; 2]) {
+        let (w, h) = (self.cols * side, self.rows * side);
+        let mut mask = vec![0u8; w * h];
+        for (k, tile) in self.lsb.tiles.iter().enumerate() {
+            let Some(tile) = tile else { continue };
+            let (tx, tz) = (k % self.cols, k / self.cols);
+            let shares = tile.shadow_shares(side);
+            let mut acc = vec![0.0f32; side * side];
+            for row in 0..tile.height as usize {
+                let y = row * side / tile.height as usize;
+                for (a, s) in acc[y * side..(y + 1) * side].iter_mut().zip(&shares[row * side..(row + 1) * side]) {
+                    *a += s;
+                }
+            }
+            let rows_per = tile.height as f32 / side as f32;
+            for y in 0..side {
+                let line = (tz * side + y) * w + tx * side;
+                for x in 0..side {
+                    mask[line + x] = (acc[y * side + x] / rows_per * 255.0).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+        (w, h, mask, self.origin, [self.patch * self.cols as f64, self.patch * self.rows as f64])
+    }
+
     /// The five points of the vote round `origin` ([`FAN`], at [`REACH`] × `radius` towards the sun).
     pub fn fan(&self, origin: [f32; 3], radius: f32) -> [[f32; 3]; 5] {
         let d = [self.sun[0] * radius * REACH, self.sun[1] * radius * REACH];

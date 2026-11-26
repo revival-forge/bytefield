@@ -19,7 +19,7 @@ pub(super) fn wheel_keys(g: &Game, now: &mut Held) {
     let sim = &g.session.sim;
     let p = &sim.players[g.player];
     let Some(s) = p.soldier.filter(|_| p.alive).map(|i| &sim.vehicles[i]).filter(|s| s.entry.inside.is_none()) else { return };
-    let Some(m) = s.movement.as_ref() else { return };
+    let Some(m) = s.soldier() else { return };
     let Some(cur) = m.weapon.as_ref().map(|w| w.template.item_index) else { return };
     let mut slots: Vec<i32> = m.stowed.iter().filter(|w| !(w.template.cant_select_empty && w.total_ammo() == 0)).map(|w| w.template.item_index).chain([cur]).collect();
     slots.sort();
@@ -91,6 +91,99 @@ pub(super) fn arms_log(tick: u64, piece: usize, t: &Transform) {
     }
 }
 
+/// `BYTEFIELD_FILM_LOG=<file>`: a line per tick with what happens to the player, from the simulation (with the AI playing
+/// the player, the input axes say nothing), for a scorer to pick the windows of a recorded take worth
+/// watching: alive, its vehicle and seat, where, how fast, the shots it fired this tick (projectiles fired by its soldier
+/// or its vehicle, not alive the tick before), its kills so far, the enemies alive within 150 m, its height over the ground and its pose on foot.
+pub(super) fn film_log(g: &Game) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let Some(file) = FILE.get_or_init(|| std::env::var_os("BYTEFIELD_FILM_LOG").and_then(|p| std::fs::File::create(p).ok()).map(std::sync::Mutex::new)) else { return };
+    let sim = &g.session.sim;
+    let p = &sim.players[g.player];
+    let soldier = p.soldier.filter(|_| p.alive);
+    let inside = soldier.and_then(|i| sim.vehicles[i].entry.inside);
+    let body = inside.or(soldier).map(|k| &sim.vehicles[k].craft.body);
+    let pos = body.map_or([0.0; 3], |b| b.pos);
+    let speed = body.map_or(0.0, |b| (b.vel[0].powi(2) + b.vel[1].powi(2) + b.vel[2].powi(2)).sqrt());
+    let mine = |o: Option<usize>| o.is_some() && (o == soldier || o == inside);
+    // (new: a slot and a muzzle not seen the tick before; a slot is reused once spent)
+    static SEEN: std::sync::Mutex<Vec<(usize, [u32; 3])>> = std::sync::Mutex::new(Vec::new());
+    let now: Vec<(usize, [u32; 3])> = sim.projectiles.iter().enumerate().filter(|(_, q)| q.alive() && mine(q.owner)).map(|(i, q)| (i, q.start.map(|c| (c as f32).to_bits()))).collect();
+    let shots = SEEN.lock().map_or(0, |mut seen| {
+        let n = now.iter().filter(|k| !seen.contains(k)).count();
+        *seen = now;
+        n
+    });
+    let enemies = if body.is_none() {
+        0
+    } else {
+        sim.players
+            .iter()
+            .filter(|e| e.alive && e.team != p.team && e.team != 0)
+            .filter_map(|e| e.soldier.map(|i| sim.vehicles[i].entry.inside.unwrap_or(i)))
+            .filter(|&k| {
+                let q = sim.vehicles[k].craft.body.pos;
+                (q[0] - pos[0]).powi(2) + (q[1] - pos[1]).powi(2) + (q[2] - pos[2]).powi(2) < 150.0f64.powi(2) as _
+            })
+            .count()
+    };
+    let ground = sim.world.height_at(pos[0] as f64, pos[2] as f64).map_or(0.0, |h| pos[1] as f64 - h);
+    let line = format!(
+        "tick={} alive={} vehicle={} seat={} x={:.1} y={:.1} z={:.1} speed={:.1} shots={shots} kills={} deaths={} enemies={enemies} agl={ground:.1} pose={}\n",
+        g.tick,
+        soldier.is_some() as u8,
+        inside.map_or("-", |k| sim.vehicles[k].template.as_str()),
+        soldier.map_or(0, |i| sim.vehicles[i].entry.position),
+        pos[0],
+        pos[1],
+        pos[2],
+        speed,
+        p.kills,
+        p.deaths,
+        // (on foot: 0 standing, 1 crouched, 2 lying; - in a vehicle or dead)
+        soldier.filter(|_| inside.is_none()).and_then(|i| sim.vehicles[i].soldier()).map_or("-".to_string(), |m| m.pose().to_string()),
+    );
+    if let Ok(mut f) = file.lock() {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// `BYTEFIELD_BOMB_CAM=chase|flyby[:<seconds>]` (to film a bombing run, with the AI flying the player): when a bomb leaves the
+/// player's vehicle the view goes out (F10 or F12) for that long (4 s), to see it fall, and then back inside.
+pub(super) fn bomb_cam(g: &mut Game) {
+    static CONF: std::sync::OnceLock<Option<(Outside, u64)>> = std::sync::OnceLock::new();
+    static UNTIL: std::sync::Mutex<Option<u64>> = std::sync::Mutex::new(None);
+    static SEEN: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+    let Some((view, ticks)) = *CONF.get_or_init(|| {
+        let v = std::env::var("BYTEFIELD_BOMB_CAM").ok().filter(|v| !v.is_empty())?;
+        let (name, secs) = v.split_once(':').unwrap_or((&v, "4"));
+        let view = if name.eq_ignore_ascii_case("flyby") { Outside::FlyBy } else { Outside::Chase };
+        Some((view, (secs.parse::<f64>().unwrap_or(4.0) / TICK) as u64))
+    }) else {
+        return;
+    };
+    let sim = &g.session.sim;
+    let p = &sim.players[g.player];
+    let inside = p.soldier.filter(|_| p.alive).and_then(|i| sim.vehicles[i].entry.inside);
+    let bombs: Vec<usize> = sim
+        .projectiles
+        .iter()
+        .enumerate()
+        .filter(|(_, q)| q.alive() && inside.is_some() && q.owner == inside && { let n = q.template.name.to_ascii_lowercase(); n.contains("bomb") && !n.contains("mortar") })
+        .map(|(i, _)| i)
+        .collect();
+    let (Ok(mut seen), Ok(mut until)) = (SEEN.lock(), UNTIL.lock()) else { return };
+    if bombs.iter().any(|i| !seen.contains(i)) {
+        *until = Some(g.tick + ticks);
+        (g.third_person, g.outside, g.nose, g.orbit) = (true, view, false, Vec2::ZERO);
+    } else if until.is_some_and(|t| g.tick >= t) || (until.is_some() && inside.is_none()) {
+        *until = None;
+        g.third_person = false;
+    }
+    *seen = bombs;
+}
+
 /// `BYTEFIELD_STATE=<file>`: a line per tick with what the player does, for a test that plays through the devices
 /// (`python/tests/base/client/test_controls.py`): where it is, what it is in, its look and the axes that went to the simulation.
 pub(super) fn state_log(g: &Game, a: &[(usize, f32)]) {
@@ -103,7 +196,7 @@ pub(super) fn state_log(g: &Game, a: &[(usize, f32)]) {
     let inside = s.entry.inside.map(|k| &sim.vehicles[k]);
     let axis = |n: usize| a.iter().find(|x| x.0 == n).map_or(0.0, |x| x.1);
     let line = format!(
-        "tick={} map={:?} vehicle={} seat={} seat_head={:.2} x={:.3} z={:.3} head_yaw={:.4} pitch={:.4} vx={:.3} vz={:.3} yaw_axis={} pitch_axis={} roll_axis={} throttle={} mouse_x={} mouse_y={} fire={} upper={} upper_t={:.3} weapon={}\n",
+        "tick={} map={:?} vehicle={} seat={} seat_head={:.2} x={:.3} z={:.3} head_yaw={:.4} pitch={:.4} vx={:.3} vz={:.3} yaw_axis={} pitch_axis={} roll_axis={} throttle={} mouse_x={} mouse_y={} fire={} upper={} upper_t={:.3} weapon={} vy={:.2} up={:.2},{:.2},{:.2} fwd={:.2},{:.2},{:.2}\n",
         g.tick,
         control_context(g).map,
         inside.map_or("-", |v| v.template.as_str()),
@@ -111,8 +204,8 @@ pub(super) fn state_log(g: &Game, a: &[(usize, f32)]) {
         g.seat_head,
         s.craft.body.pos[0],
         s.craft.body.pos[2],
-        s.movement.as_ref().map_or(0.0, |m| m.head_yaw),
-        s.movement.as_ref().map_or(0.0, |m| m.pitch),
+        s.soldier().map_or(0.0, |m| m.head_yaw),
+        s.soldier().map_or(0.0, |m| m.pitch),
         inside.map_or(0.0, |v| v.craft.body.pos[0]),
         inside.map_or(0.0, |v| v.craft.body.pos[2]),
         axis(axis::YAW),
@@ -123,9 +216,17 @@ pub(super) fn state_log(g: &Game, a: &[(usize, f32)]) {
         axis(axis::MOUSE_Y),
         axis(axis::FIRE),
         // (the upper body's animation state, and its weapon's, the zoom and the grenade in the first person)
-        s.movement.as_ref().and_then(|m| m.upper.state.map(|i| m.machine.states[i].name.clone())).unwrap_or_default(),
-        s.movement.as_ref().map_or(0.0, |m| m.upper.time),
-        s.movement.as_ref().and_then(|m| m.upper.state.and_then(|i| m.machine.states[i].other.iter().find(|o| o.0 == "c_asmweaponstate").map(|o| o.1.clone()))).unwrap_or_default(),
+        s.soldier().and_then(|m| m.upper.state.map(|i| m.machine.states[i].name.clone())).unwrap_or_default(),
+        s.soldier().map_or(0.0, |m| m.upper.time),
+        s.soldier().and_then(|m| m.upper.state.and_then(|i| m.machine.states[i].other.iter().find(|o| o.0 == "c_asmweaponstate").map(|o| o.1.clone()))).unwrap_or_default(),
+        // (the vehicle's height and attitude: its up and forward axes)
+        inside.map_or(0.0, |v| v.craft.body.pos[1]),
+        inside.map_or(0.0, |v| v.craft.body.rows[1][0]),
+        inside.map_or(0.0, |v| v.craft.body.rows[1][1]),
+        inside.map_or(0.0, |v| v.craft.body.rows[1][2]),
+        inside.map_or(0.0, |v| v.craft.body.rows[2][0]),
+        inside.map_or(0.0, |v| v.craft.body.rows[2][1]),
+        inside.map_or(0.0, |v| v.craft.body.rows[2][2]),
     );
     if let Ok(mut f) = file.lock() {
         let _ = f.write_all(line.as_bytes());

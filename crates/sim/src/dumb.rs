@@ -32,6 +32,8 @@ pub const STUCK_MIN_S: f64 = 10.0;
 pub const STILL_MIN_S: f64 = 20.0;
 /// Metres from where a run without moving began.
 pub const STILL_RADIUS: f32 = 2.0;
+/// The same in a vehicle that moves: a stuck driver backs up and tries again a few metres either way (GC_Tatooine's AT-ST at the wall).
+pub const STILL_RADIUS_MOUNTED: f32 = 6.0;
 /// The window for going round in circles, its path and the farthest it may get, on foot and mounted.
 pub const CIRCLE_WINDOW: usize = 20;
 pub const CIRCLE_PATH: [f32; 2] = [25.0, 80.0];
@@ -66,6 +68,8 @@ pub struct Sample {
     pub human: bool,
     /// kills so far (None where it is not known)
     pub kills: Option<u32>,
+    /// its mind says it stands still on purpose, and why ([`crate::bot_api::Mind::intent`]; None where it is not known)
+    pub waits: Option<&'static str>,
 }
 
 /// A control point at a moment.
@@ -130,6 +134,10 @@ struct Bot {
     still_since: f64,
     still_combat: f64,
     still_wants: f64,
+    /// of the run without moving, the seconds its mind said it was waiting on purpose ([`Sample::waits`])
+    still_ordered: f64,
+    /// why it waited, the last time it said so
+    waits_why: Option<&'static str>,
     // going round in circles
     trail: VecDeque<[f32; 3]>,
     circle: Option<(f64, [f32; 3], f64)>,
@@ -235,6 +243,7 @@ impl Detector {
                 b.still_since = t;
                 b.still_combat = 0.0;
                 b.still_wants = 0.0;
+                b.still_ordered = 0.0;
                 b.trail.clear();
             }
             b.pos = Some(pos);
@@ -245,6 +254,20 @@ impl Detector {
             let enemy = Self::nearest_enemy(&self.live, p.team, pos);
             let shot_lately = b.last_shot.is_some_and(|s| t - s.0 < COMBAT_S);
             let combat = shot_lately || enemy.is_some_and(|d| d < COMBAT_M);
+            // getting in or out ends the runs without moving and in circles, under what it was in: a vehicle stuck for two minutes
+            // that its driver then left was counted on foot, and the wait on foot before getting in as mounted
+            let b = &self.bots[&p.id];
+            if b.ride.as_ref().map(|r| r.1) != p.vehicle.as_ref().map(|v| v.1) {
+                self.end_still(p.id, t);
+                self.end_circle(p.id, t);
+                let b = self.bots.get_mut(&p.id).unwrap();
+                b.anchor = Some(pos);
+                b.still_since = t;
+                b.still_combat = 0.0;
+                b.still_wants = 0.0;
+                b.still_ordered = 0.0;
+                b.trail.clear();
+            }
             self.watch_ride(p, pos, t);
             if p.fixed {
                 let b = self.bots.get_mut(&p.id).unwrap();
@@ -295,11 +318,22 @@ impl Detector {
         if b.human || !((wants && dur >= STUCK_MIN_S) || dur >= STILL_MIN_S) {
             return;
         }
+        // M2: a run its mind said was a wait on purpose (an ambush, an assembly point) is counted apart, not as still or stuck
+        if b.still_ordered >= 0.7 * dur {
+            let detail = format!("waits {} in {} ({:.0} s fighting)", b.waits_why.unwrap_or("?"), b.ride.as_ref().map_or("foot", |r| r.0.as_str()), b.still_combat);
+            let team = b.team;
+            self.events.push(Event { t: t - dur, bot: Some(id), team, kind: "still_ordered", pos: whole(anchor), dur, detail });
+            *self.n.entry("still_ordered_s").or_default() += dur;
+            return;
+        }
         let mounted = b.ride.is_some();
         let kind = if wants { "stuck" } else { "still" };
         let quiet = dur - b.still_combat;
         let detail = format!("plan {} in {} ({:.0} s fighting)", b.plan.as_deref().unwrap_or("?"), b.ride.as_ref().map_or("foot", |r| r.0.as_str()), b.still_combat);
         let team = b.team;
+        if crate::debug::options().quality_b16 {
+            eprintln!("b16 t={:.0} bot={id} team={team} kind={kind} dur={dur:.1} fighting={:.1} in={} at={:.0},{:.0}", t - dur, b.still_combat, b.ride.as_ref().map_or("foot", |r| r.0.as_str()), anchor[0], anchor[2]);
+        }
         self.events.push(Event { t: t - dur, bot: Some(id), team, kind, pos: whole(anchor), dur, detail });
         let key: &'static str = match (wants, mounted) {
             (true, false) => "stuck_foot_s",
@@ -318,7 +352,8 @@ impl Detector {
     fn watch_still(&mut self, p: &Sample, pos: [f32; 3], t: f64, step: f64, combat: bool) {
         let b = self.bots.get_mut(&p.id).unwrap();
         // (in the air a mounted one is never still: its height counts too)
-        let moved = b.anchor.is_none_or(|a| flat(a, pos) > STILL_RADIUS || (a[1] - pos[1]).abs() > 2.0 * STILL_RADIUS);
+        let r = if p.vehicle.is_some() && !p.fixed { STILL_RADIUS_MOUNTED } else { STILL_RADIUS };
+        let moved = b.anchor.is_none_or(|a| flat(a, pos) > r || (a[1] - pos[1]).abs() > 2.0 * r);
         if moved {
             self.end_still(p.id, t);
             let b = self.bots.get_mut(&p.id).unwrap();
@@ -326,6 +361,7 @@ impl Detector {
             b.still_since = t;
             b.still_combat = 0.0;
             b.still_wants = 0.0;
+            b.still_ordered = 0.0;
             return;
         }
         if combat {
@@ -333,6 +369,10 @@ impl Detector {
         }
         if hooks::wants_to_move(b.plan.as_deref()) {
             b.still_wants += step;
+        }
+        if p.waits.is_some() {
+            b.still_ordered += step;
+            b.waits_why = p.waits;
         }
     }
 
@@ -557,6 +597,7 @@ impl Detector {
         put("fixed gun %", pct(judged.iter().map(|b| b.fixed_s).sum(), alive));
         put("still foot %", pct(get("still_foot_s"), free));
         put("still mounted %", pct(get("still_mounted_s"), free));
+        put("still ordered %", pct(get("still_ordered_s"), free));
         put("stuck foot %", pct(get("stuck_foot_s"), free));
         put("stuck mounted %", pct(get("stuck_mounted_s"), free));
         put("still quiet %", pct(get("still_quiet_s"), free));
@@ -771,7 +812,7 @@ impl Watcher {
             if Self::human_handle(s) == Some(hooks::handle(s, e.vehicle)) {
                 self.human.damaged(e.step as f64 / 30.0, e.amount);
             }
-            let soldier = v.movement.is_some();
+            let soldier = v.soldier().is_some();
             let team = if soldier { s.players.iter().find(|p| p.soldier == Some(e.vehicle)).map_or(v.team, |p| p.team) } else { v.team };
             use crate::damage::Source;
             if matches!(e.source, Source::Heal | Source::Repair | Source::Kill) {
@@ -789,6 +830,15 @@ impl Watcher {
         p.soldier.filter(|_| p.alive).map(|v| hooks::handle(s, v))
     }
 
+    /// The soldier `i` presses forward or back: on its own legs, or on the throttle of what it drives (a passenger presses nothing).
+    fn pushes_on(s: &crate::Sim, i: usize) -> bool {
+        const AXIS: usize = crate::soldier::axis::THROTTLE;
+        match s.vehicles[i].entry.inside {
+            Some(v) => s.vehicles[v].entry.driver == Some(i) && !s.vehicles[v].fixed && s.vehicles[v].craft.inputs.get(AXIS).is_some_and(|x| x.abs() > 0.1),
+            None => s.vehicles[i].soldier().is_some_and(|m| m.input.get(AXIS).abs() > 0.1),
+        }
+    }
+
     fn sample(&mut self, s: &crate::Sim, t: f64) {
         hooks::sample_human(self, s, t);
         let samples: Vec<Sample> = s
@@ -798,7 +848,8 @@ impl Watcher {
             .map(|(k, p)| {
                 let soldier = p.soldier.filter(|_| p.alive);
                 let inside = soldier.and_then(|i| s.vehicles[i].entry.inside);
-                let plan = hooks::plan_of(s, k);
+                // a mind with no plan to show (bots): what it does with the controls says whether it means to go somewhere
+                let plan = hooks::plan_of(s, k).or_else(|| (p.ai && soldier.is_some()).then(|| if soldier.is_some_and(|i| Self::pushes_on(s, i)) { "go" } else { "idle" }.to_string()));
                 if let Some(n) = &plan {
                     self.plans.insert(k, n.clone());
                 }
@@ -812,6 +863,7 @@ impl Watcher {
                     plan: self.plans.get(&k).cloned(),
                     human: !p.ai,
                     kills: Some(p.kills),
+                    waits: s.drivers.minds.intent(k).waits.filter(|_| p.alive).map(|w| w.name()),
                 }
             })
             .collect();
@@ -854,6 +906,41 @@ mod tests {
         assert_eq!(r["events"][0]["bot"], 0);
         assert!(total(&r, "stuck foot %") > 40.0);
         assert_eq!(total(&r, "still foot %"), 0.0);
+    }
+
+    /// M2: standing still while its mind says it waits on purpose is counted apart; without that, the same run is stuck.
+    #[test]
+    fn a_wait_on_purpose_is_not_stuck() {
+        let run = |waits: Option<&'static str>| {
+            let mut d = Detector::new();
+            for t in 0..40 {
+                let me = Sample { waits, ..bot(0, 1, [0.0, 0.0, 0.0], "go") };
+                d.sample(t as f64, &[me, bot(1, 2, [500.0, 0.0, t as f32 * 3.0], "go")], None);
+            }
+            d.finish(serde_json::json!({}))
+        };
+        let r = run(Some("rally"));
+        assert_eq!((kinds(&r, "still_ordered"), kinds(&r, "stuck"), kinds(&r, "still")), (1, 0, 0));
+        assert!(r["events"][0]["detail"].as_str().unwrap().starts_with("waits rally"));
+        assert!(total(&r, "still ordered %") > 40.0);
+        assert_eq!((total(&r, "stuck foot %"), total(&r, "still foot %")), (0.0, 0.0));
+        let r = run(None);
+        assert_eq!((kinds(&r, "still_ordered"), kinds(&r, "stuck")), (0, 1));
+        assert_eq!(total(&r, "still ordered %"), 0.0);
+    }
+
+    #[test]
+    fn a_vehicle_stuck_and_then_left_counts_as_mounted() {
+        let mut d = Detector::new();
+        for t in 0..60 {
+            // (0 waits on foot for 20 s, gets in, sits stuck 30 s and gets out beside it)
+            let mut me = bot(0, 1, [if t < 50 { 0.0 } else { 3.0 }, 0.0, 0.0], "go");
+            me.vehicle = (20..50).contains(&t).then(|| ("t-3b".to_string(), 7));
+            d.sample(t as f64, &[me, bot(1, 2, [500.0, 0.0, t as f32 * 3.0], "go")], None);
+        }
+        let r = d.finish(serde_json::json!({}));
+        let stuck: Vec<_> = r["events"].as_array().unwrap().iter().filter(|e| e["kind"] == "stuck").map(|e| (e["dur"].as_f64().unwrap(), e["detail"].as_str().unwrap().to_string())).collect();
+        assert_eq!(stuck, [(20.0, "plan go in foot (0 s fighting)".to_string()), (30.0, "plan go in t-3b (0 s fighting)".to_string())]);
     }
 
     #[test]

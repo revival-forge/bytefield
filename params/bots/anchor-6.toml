@@ -1,0 +1,5 @@
+# The fixed rival from 1.24.0 (25-nov-2026): anchor 5 with `fov` (on foot, a target only within its field of view, near it or the
+# one it follows) and `recall` (a target lost from sight is watched for a few seconds where he was). Never edited: a new anchor is
+# a new file; if a later default changes how `bots` plays, its mind gets the `no-` of it, as anchors 2 to 5.
+mind = "bots"
+about = "anchor 6: bots 1.24.0 (fov and recall by default), defaults, variants off"

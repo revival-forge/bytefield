@@ -27,9 +27,34 @@ pub struct Detail {
     #[texture(104)]
     #[sampler(105)]
     pub atlas: Option<Handle<Image>>,
-    /// x: the world's far plane ([`Atmosphere::far`]), past which (in the view's depth) the terrain is not drawn
+    /// x: the world's far plane ([`Atmosphere::far`]), past which (in the view's depth) the terrain is not drawn; y: the clouds'
+    /// shadows ([`cloud_strength`]); z: the relief (the `relief` setting)
     #[uniform(106)]
     pub clip: Vec4,
+    /// the terrain's baked shadow (the `.lsb`, [`baked_mask`]), which the relief keeps out of; 107 is the grass's wind
+    #[texture(108)]
+    #[sampler(109)]
+    pub baked: Option<Handle<Image>>,
+    /// where the mask lies in the original's x and z: xy where it starts, zw 1 / how far it reaches (0 without one)
+    #[uniform(110)]
+    pub baked_at: Vec4,
+}
+
+/// The terrain's baked shadow as a mask for its shader (one texel a metre at most, no wider than 4096) and where it
+/// lies; a black texel and nowhere without a `.lsb`.
+fn baked_mask(shadow: Option<&bytefield_world::shadow::ShadowSampler>) -> (Image, Vec4) {
+    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+    let none = || (Image::new_fill(Extent3d { width: 1, height: 1, depth_or_array_layers: 1 }, TextureDimension::D2, &[0], TextureFormat::R8Unorm, bevy::asset::RenderAssetUsages::RENDER_WORLD), Vec4::ZERO);
+    let Some(s) = shadow else { return none() };
+    let (cols, rows, patch, _) = s.grid();
+    let side = (patch.round() as usize).min(4096 / cols.max(rows).max(1)).max(1);
+    let (w, h, mask, at, reach) = s.baked_mask(side);
+    if w == 0 || h == 0 {
+        return none();
+    }
+    let mut i = Image::new(Extent3d { width: w as u32, height: h as u32, depth_or_array_layers: 1 }, TextureDimension::D2, mask, TextureFormat::R8Unorm, bevy::asset::RenderAssetUsages::RENDER_WORLD);
+    i.sampler = bevy::image::ImageSampler::linear();
+    (i, Vec4::new(at[0] as f32, at[1] as f32, 1.0 / reach[0] as f32, 1.0 / reach[1] as f32))
 }
 
 /// How the level's objects cast their shadows ([`Atmosphere::object_shadow`]): from where (Bevy's axes) and how dark.
@@ -249,6 +274,9 @@ pub struct BillboardShade {
     /// x the views in the texture, y `billboardFadeScale`, z 1 for `useNewBillboardFadeFunc`
     #[uniform(100)]
     pub params: Vec4,
+    /// As the trees' meshes (`TreeLight`): xyz what they keep of their light in a shadow, w the clouds' strength
+    #[uniform(101)]
+    pub shade: Vec4,
 }
 
 impl bevy::pbr::MaterialExtension for BillboardShade {
@@ -332,6 +360,16 @@ pub struct Baked {
     /// [`Atmosphere::shade`] (rgb) with the sun's shadows, else 1; w: a `textureFade` piece's `textureFadeMaxDist`, else 0
     #[uniform(102)]
     pub shade: Vec4,
+    /// x: how dark the clouds' shadows are ([`cloud_strength`]); y: a `textureFade` piece's radius, where its fade starts
+    #[uniform(103)]
+    pub clouds: Vec4,
+}
+
+/// The clouds' shadows (`shaders/clouds.wesl`): the setting, with the sun's shadows only (without them the statics, the trees and the
+/// water take no sun to darken). From the next round, as the materials take it (what Bevy lights, at once: it rides in the fog).
+pub fn cloud_strength() -> f32 {
+    let g = assets::graphics();
+    if g.shadows { g.clouds } else { 0.0 }
 }
 
 impl bevy::pbr::MaterialExtension for Baked {
@@ -350,7 +388,7 @@ struct Lightmaps {
     images: std::collections::HashMap<String, Option<Handle<Image>>>,
     /// `texture/defaultTexture.dds`, for the statics with no map of their own ([`Lightmaps::image`])
     stand_in: Option<Option<Handle<Image>>>,
-    made: std::collections::HashMap<(AssetId<StandardMaterial>, AssetId<Image>, u32), Handle<BakedMaterial>>,
+    made: std::collections::HashMap<(AssetId<StandardMaterial>, AssetId<Image>, u32, u32), Handle<BakedMaterial>>,
 }
 
 impl Lightmaps {
@@ -393,15 +431,16 @@ impl Lightmaps {
     }
 
     /// A part's baked material, when it has a lightmap and takes one: drawn lit, opaque or cut by its alpha, with the
-    /// lightmap's UVs. `fade`: a `textureFade` piece's far distance, blended in by `baked.wesl`.
+    /// lightmap's UVs. `fade`: a `textureFade` piece's far distance and its geometry's radius, blended in by `baked.wesl`.
     #[allow(clippy::too_many_arguments)]
-    fn material(&mut self, vfs: &bytefield_vfs::Vfs, key: &str, mesh: &Handle<Mesh>, mat: &Handle<StandardMaterial>, fade: Option<f32>, meshes: &Assets<Mesh>, materials: &Assets<StandardMaterial>, images: &mut Assets<Image>, baked: &mut Assets<BakedMaterial>) -> Option<Handle<BakedMaterial>> {
-        let base = materials.get(mat).filter(|m| !matches!(m.alpha_mode, AlphaMode::Blend))?;
+    fn material(&mut self, vfs: &bytefield_vfs::Vfs, key: &str, mesh: &Handle<Mesh>, mat: &Handle<StandardMaterial>, fade: Option<(f32, f32)>, meshes: &Assets<Mesh>, materials: &Assets<StandardMaterial>, images: &mut Assets<Image>, baked: &mut Assets<BakedMaterial>) -> Option<Handle<BakedMaterial>> {
+        let base = materials.get(mat).filter(|m| !matches!(m.alpha_mode, AlphaMode::Blend | AlphaMode::Add))?;
         meshes.get(mesh).filter(|m| m.contains_attribute(Mesh::ATTRIBUTE_UV_1))?;
         let lightmap = self.image(vfs, key, images)?;
-        let shade = self.shade.truncate().extend(fade.unwrap_or(0.0));
+        let shade = self.shade.truncate().extend(fade.map_or(0.0, |f| f.0));
+        let radius = fade.map_or(0.0, |f| f.1);
         let base = StandardMaterial { alpha_mode: if fade.is_some() { AlphaMode::Blend } else { base.alpha_mode }, ..base.clone() };
-        Some(self.made.entry((mat.id(), lightmap.id(), shade.w.to_bits())).or_insert_with(|| baked.add(BakedMaterial { base, extension: Baked { lightmap, shade } })).clone())
+        Some(self.made.entry((mat.id(), lightmap.id(), shade.w.to_bits(), radius.to_bits())).or_insert_with(|| baked.add(BakedMaterial { base, extension: Baked { lightmap, shade, clouds: Vec4::new(cloud_strength(), radius, 0.0, 0.0) } })).clone())
     }
 }
 
@@ -475,6 +514,14 @@ impl bevy::pbr::MaterialExtension for Water {
     fn fragment_shader() -> bevy::shader::ShaderRef {
         "embedded://bytefield/shaders/water.wesl".into()
     }
+    /// The surface writes the depth though it is blended: what is drawn after it and lies under it (the palms of a flooded
+    /// level, the original shows none) fails the test instead of being drawn over the water
+    fn specialize(_: &bevy::pbr::MaterialExtensionPipeline, descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor, _: &bevy::mesh::MeshVertexBufferLayoutRef, _: bevy::pbr::MaterialExtensionKey<Self>) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if let Some(d) = descriptor.depth_stencil.as_mut() {
+            d.depth_write_enabled = Some(true);
+        }
+        Ok(())
+    }
 }
 
 /// The water (`water.*` of the level's `Init.con`, `Terrain`'s `waterLevel`): the terrain's cells
@@ -520,7 +567,7 @@ fn spawn_water(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>
             normal_map: tex("water.normalMap", "texture/normalMap02", cache, images),
             reflect: Vec4::new(0.0, world.level.terrain.water_level as f32, 0.0, 0.0),
             reflection: None,
-            shade: if assets::graphics().shadows { Atmosphere::of(world).shade } else { Vec3::ONE }.extend(1.0),
+            shade: if assets::graphics().shadows { Atmosphere::of(world).shade } else { Vec3::ONE }.extend(cloud_strength()),
             fx: Vec4::ZERO,
             // the sun of the cube map of the highlight: flattened by `specularStreakFactor`
             sun: {
@@ -550,6 +597,11 @@ const STATIC_PROXY_LAYER: usize = 6;
 /// The world's eye (the player's camera, `--fly`'s): the sky follows it and the water mirrors it.
 #[derive(Component)]
 pub struct WorldCamera;
+
+/// A layer only the world's eye sees (not the water's mirror): what needs its depth prepass, as the decals.
+pub fn world_eye_only() -> bevy::camera::visibility::RenderLayers {
+    bevy::camera::visibility::RenderLayers::layer(WATER_LAYER)
+}
 
 /// What the world's eye sees: the world, the water when it reflects and the statics' shadow light.
 pub fn world_layers() -> bevy::camera::visibility::RenderLayers {
@@ -653,6 +705,19 @@ pub fn water_time(time: Res<Time>, water: Query<&WaterSurface>, mut materials: R
     }
 }
 
+/// The `relief` setting on the terrain's material as it changes (its `clip.z`), from the menu as from the start; touched
+/// only when it differs, or the material would go to the GPU again every frame.
+pub fn terrain_relief(terrain: Query<&MeshMaterial3d<TerrainMaterial>>, mut materials: ResMut<Assets<TerrainMaterial>>) {
+    let relief = assets::graphics().relief;
+    for t in &terrain {
+        if materials.get(&t.0).is_some_and(|m| m.extension.clip.z != relief)
+            && let Some(mut m) = materials.get_mut(&t.0)
+        {
+            m.extension.clip.z = relief;
+        }
+    }
+}
+
 /// Where the colour tiles lie: tiles of worldSize / (columns + 2 `texOffsetX`) metres (256 in all
 /// of bf1942's), starting `texOffsetX` tiles from x 0 and `texOffsetY` from z 0 (Wake 2/2 with 4 × 4
 /// in 2048: 512..1536; GuadalCanal 4/4 with 8, Midway 6/6 with 4, in 4096). Tobruk's 4/−10 (8 × 6 in
@@ -705,11 +770,15 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
     });
     let atm = Atmosphere::of(world);
     let detail = (!lvl.terrain.detail_tex.is_empty()).then(|| cache.texture(&world.vfs, &lvl.terrain.detail_tex, images)).flatten();
+    // how lit each tree stands, and where the relief stays out: the terrain's baked shadow and colour tiles
+    let shadow = bytefield_world::shadow::ShadowSampler::new(&world.vfs, &world.db, lvl);
+    let (baked, baked_at) = baked_mask(shadow.as_ref());
     let terrain_mat = terrain_materials.add(TerrainMaterial {
         base: StandardMaterial { base_color_texture: tex, uv_transform, unlit: true, fog_enabled: false, ..default() },
-        extension: Detail { scale: Vec4::new(detail_per_metre(), atm.shade.x, atm.shade.y, atm.shade.z), texture: detail, shadow_rows: Some(images.add(crate::shadows::rows_image())), atlas: Some(images.add(crate::shadows::atlas())), clip: Vec4::new(atm.far(), 0.0, 0.0, 0.0) },
+        extension: Detail { scale: Vec4::new(detail_per_metre(), atm.shade.x, atm.shade.y, atm.shade.z), texture: detail, shadow_rows: Some(images.add(crate::shadows::rows_image())), atlas: Some(images.add(crate::shadows::atlas())), clip: Vec4::new(atm.far(), cloud_strength(), assets::graphics().relief, 0.0), baked: Some(images.add(baked)), baked_at },
     });
     commands.insert_resource(ShadowLight { dir: atm.object_shadow.0, alpha: atm.object_shadow.1 });
+    let grass_terrain = terrain_mat.clone();
     commands.spawn((Mesh3d(meshes.add(assets::terrain_mesh(lvl, 1))), MeshMaterial3d(terrain_mat)));
 
     spawn_water(world, commands, meshes, water_materials, cache, images);
@@ -717,11 +786,9 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
     // static meshes (a vehicle placed in the level is the simulation's: `World::placed_vehicles`)
     // (also with the dynamic lights: its shader takes them; without the sun's shadows it keeps all its light)
     let g = assets::graphics();
-    let tree_light = TreeLight { shade: if g.shadows { atm.tree_shade.extend(1.0) } else { Vec4::ONE }, ambient: atm.fixed.0.extend(1.0), diffuse: atm.fixed.1.extend(1.0), sun: atm.sun.extend(0.0), factor: Vec4::ONE, blend: Vec4::ZERO, sprite: Vec4::ONE, fade: Vec4::ZERO };
+    let tree_light = TreeLight { shade: if g.shadows { atm.tree_shade.extend(1.0) } else { Vec4::ONE }, ambient: atm.fixed.0.extend(1.0), diffuse: atm.fixed.1.extend(1.0), sun: atm.sun.extend(cloud_strength()), factor: Vec4::ONE, blend: Vec4::ZERO, sprite: Vec4::ONE, fade: Vec4::ZERO };
     let tiles = mosaic.as_ref().filter(|_| g.shadows).map(|(img, _, _)| Tiles { img, uv: uv_transform, world_size: lvl.terrain.world_size as f32 });
     let mut trees = Trees { light: tree_light, cast: g.shadows, made: std::collections::HashMap::new(), proxies: ShadowProxies::default() };
-    // how lit each tree stands: the terrain's baked shadow and colour tiles
-    let shadow = bytefield_world::shadow::ShadowSampler::new(&world.vfs, &world.db, lvl);
     let mut tree_boxes: std::collections::HashMap<String, Option<[[f32; 3]; 2]>> = std::collections::HashMap::new();
     let mut boxes = MeshBoxes::default();
     // and a small static's without a lightmap, as a vehicle's
@@ -744,6 +811,7 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
     };
     let mut lightmaps = g.lightmaps.then(|| Lightmaps::new(world, if g.shadows { atm.shade.extend(1.0) } else { Vec4::ONE }));
     let mut baked_parts = 0;
+    let mut fade_radius: std::collections::HashMap<String, f32> = Default::default();
     let exp = scene::expand_level(&world.db);
     let mut drawn = 0;
     let mut objects: std::collections::BTreeMap<usize, Vec<(Part, ([u8; 3], [f32; 3], Option<(TreeFade, Vec4)>, Option<TreeSway>))>> = std::collections::BTreeMap::new();
@@ -780,8 +848,16 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
             }
         }
         for (m, mat) in cache.get(&world.vfs, &d.kind, &d.mesh, meshes, materials, images) {
-            // (`textureFade`: its geometry's `textureFadeMaxDist`; 200 without it, from Husky's houses)
-            let texture_fade = cache.faded.contains(&mat.id()).then(|| world.db.get("geometrytemplate", &d.geometry).and_then(|g| g.get("texturefademaxdist")).and_then(|a| a.first()).and_then(|a| a.trim().parse::<f32>().ok()).unwrap_or(200.0));
+            // (`textureFade`: its geometry's `textureFadeMaxDist`, 200 without it, from Husky's houses; and its radius, the farthest
+            // corner of its `.sm` box)
+            let texture_fade = cache.faded.contains(&mat.id()).then(|| {
+                let far = world.db.get("geometrytemplate", &d.geometry).and_then(|g| g.get("texturefademaxdist")).and_then(|a| a.first()).and_then(|a| a.trim().parse::<f32>().ok()).unwrap_or(200.0);
+                let radius = *fade_radius.entry(d.geometry.clone()).or_insert_with(|| world.mesh(&d.geometry).map_or(0.0, |m| {
+                    let c = |i: usize| m.bounds[0][i].abs().max(m.bounds[1][i].abs());
+                    (c(0) * c(0) + c(1) * c(1) + c(2) * c(2)).sqrt()
+                }));
+                (far, radius)
+            });
             let lit = lightmaps.as_mut().filter(|_| d.kind == "standardmesh").and_then(|l| l.material(&world.vfs, &key, &m, &mat, texture_fade, meshes, materials, images, baked_materials));
             baked_parts += lit.is_some() as usize;
             // TODO: a small static with its lightmap (none in view in Husky's reference run): whether the client darkens it
@@ -793,9 +869,15 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
     // with the sun's shadows: which statics' shadows the tiles carry (into the statics' map too), and which not (into
     // the sun's only: they shade the terrain)
     let mut unbaked = Vec::new();
+    // (where the statics stand on the ground: no grass there, through a house's or a bunker's floor)
+    let mut footprints = Vec::new();
     for (i, parts) in objects {
         let (parts, factors): (Vec<Part>, Vec<([u8; 3], [f32; 3], Option<(TreeFade, Vec4)>, Option<TreeSway>)>) = parts.into_iter().unzip();
-        let baked = tiles.as_ref().zip(bounds(&parts, meshes)).is_none_or(|(tl, b)| tl.carry_shadow(b, atm.sun));
+        let b = bounds(&parts, meshes);
+        if let Some((lo, hi)) = b.filter(|_| parts.iter().any(|p| p.0 != "treemesh")) {
+            footprints.push((lo, hi));
+        }
+        let baked = tiles.as_ref().zip(b).is_none_or(|(tl, b)| tl.carry_shadow(b, atm.sun));
         if !baked {
             unbaked.push(world.db.instances[i].template.as_str());
         }
@@ -806,6 +888,25 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
     }
     if !unbaked.is_empty() {
         info!("{} statics whose shadow the colour tiles lack (they shade the terrain): {}", unbaked.len(), unbaked.join(", "));
+    }
+    // the grass on its green (the setting; turned on during a round it waits for the next)
+    if g.grass > 0.0
+        && let Some((img, cols, rows)) = &mosaic
+    {
+        let started = std::time::Instant::now();
+        let mut map = bytefield_world::grass::GrassMap::new(lvl, img, bytefield_world::grass::tiles_uv(lvl, [*cols, *rows]));
+        let mut cleared = 0;
+        for (lo, hi) in footprints {
+            // (Bevy's z is the level's −z) only what reaches down to the ground, and not the long diagonal walls whose
+            // box covers a field
+            let ground = lvl.height_at(((lo.x + hi.x) * 0.5) as f64, (-(lo.z + hi.z) * 0.5) as f64, bytefield_formats::image::Orientation::IDENTITY).unwrap_or(f64::MIN) as f32;
+            if lo.y < ground + 1.0 && hi.x - lo.x < 50.0 && hi.z - lo.z < 50.0 {
+                map.clear([lo.x as f64, -hi.z as f64], [hi.x as f64, -lo.z as f64], 0.3);
+                cleared += 1;
+            }
+        }
+        info!("grass: {:.0}% of the level, {} statics' footprints cleared, in {:.0} ms", 100.0 * map.share(), cleared, started.elapsed().as_secs_f64() * 1000.0);
+        commands.insert_resource(crate::grass::Grass::new(lvl, map, grass_terrain));
     }
     // what the spawners make that never moves (a fixed gun is the simulation's: it turns)
     for s in &lvl.spawners {
@@ -839,7 +940,7 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
             i.sampler = bevy::image::ImageSampler::Descriptor(d);
         }
         let base = StandardMaterial { base_color_texture: Some(tex), alpha_mode: AlphaMode::Blend, unlit: true, cull_mode: None, double_sided: true, depth_bias: BILLBOARD_FIRST, ..default() };
-        let mat = billboard_materials.add(BillboardMaterial { base, extension: BillboardShade { params: Vec4::new(*angles as f32, renderer.fade_scale, if renderer.new_fade { 1.0 } else { 0.0 }, if g.water_gamma { 1.0 } else { 0.0 }) } });
+        let mat = billboard_materials.add(BillboardMaterial { base, extension: BillboardShade { params: Vec4::new(*angles as f32, renderer.fade_scale, if renderer.new_fade { 1.0 } else { 0.0 }, if g.water_gamma { 1.0 } else { 0.0 }), shade: trees.light.shade.truncate().extend(trees.light.sun.w) } });
         commands.spawn((Mesh3d(meshes.add(billboard_mesh(list))), MeshMaterial3d(mat), bevy::camera::visibility::NoFrustumCulling));
         quads += list.len();
     }
@@ -858,8 +959,16 @@ pub fn spawn(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
     // it lights the world and the first person's arms (their own layer, `play`); in the enhanced
     // profile with the shadows of what has `hasDynamicShadow 1`, out to 200 m (medium quality)
     let shadows = assets::graphics().shadows;
+    let light = |c: LinearColor, shadow_maps_enabled| DirectionalLight { illuminance: c.to_vec3().max_element().max(1e-3) * std::f32::consts::PI, color: c.with_luminance_ratio(), shadow_maps_enabled, ..default() };
+    // (the share its shadow leaves, at night: a light of its own without shadows; the shaders take the sun as the one with
+    // light and shadows)
+    let fill = shadows && atm.fill.to_vec3().max_element() > 1e-4;
+    if fill {
+        commands.spawn((light(atm.fill, false), Transform::from_translation(atm.sun * 100.0).looking_at(Vec3::ZERO, Vec3::Y), bevy::camera::visibility::RenderLayers::from_layers(&[0, 1])));
+    }
+    let sun = light(if fill { atm.diffuse } else { LinearColor(atm.diffuse.0 + atm.fill.0) }, shadows);
     commands.spawn((
-        DirectionalLight { illuminance: atm.diffuse.to_vec3().max_element().max(1e-3) * std::f32::consts::PI, color: atm.diffuse.with_luminance_ratio(), shadow_maps_enabled: shadows, ..default() },
+        sun,
         crate::graphics::cascades(assets::graphics().shadow_quality),
         Transform::from_translation(atm.sun * 100.0).looking_at(Vec3::ZERO, Vec3::Y),
         bevy::camera::visibility::RenderLayers::from_layers(&[0, 1, SUN_PROXY_LAYER]),
@@ -1186,6 +1295,10 @@ fn spawn_sky(world: &World, commands: &mut Commands, meshes: &mut Assets<Mesh>, 
                 // seen from inside
                 mt.cull_mode = None;
             }
+            // The sun the original shows is the one painted on these textures (El_Alamein's `Sky_Elala_04`: its core, its halo
+            // and the clouds under it): moving `sky.sunLightDirectionVec` elsewhere, under Wine, leaves it where it was and only
+            // relights the arms; no glow is drawn at the light's direction, and a night sky (DC_Basrah_Nights) shows only its
+            // painted moon. So nothing is added here.
             // (past the world's far plane, its own: not culled by it)
             commands.spawn((Mesh3d(m), MeshMaterial3d(mat), turn, ChildOf(sky), bevy::camera::visibility::NoFrustumCulling));
         }
@@ -1258,7 +1371,11 @@ pub struct Atmosphere {
     /// it the sky shows, not fogged ground: DC_Weapon_Bunkers, 93 m up, its white fog against a grey sky.
     pub view: f32,
     pub ambient: LinearColor,
+    /// The sun's light that its shadow takes (all of it but [`Atmosphere::fill`])
     pub diffuse: LinearColor,
+    /// The sun's light its shadow leaves: none by day; at night ([`shadow_strength`]) a share of the moon's, so the
+    /// shadow on what Bevy lights (arms, soldiers, vehicles) matches the terrain's [`Atmosphere::shade`]
+    pub fill: LinearColor,
     /// towards the sun, in Bevy's axes
     pub sun: Vec3,
     /// What the sun's shadow leaves of an unlit surface's light, in the screen's (gamma) space: the
@@ -1315,6 +1432,13 @@ fn shadow_color(arg: Option<&str>) -> f32 {
     if v.is_empty() { 0.5 } else { (v.iter().sum::<f32>() / v.len() as f32).clamp(0.0, 1.0) }
 }
 
+/// How much of the sun's light its shadow takes (the enhanced profile), from the level's ambient and sun: all of it by day,
+/// less at night, where the moon's shadow left a building's inside or a soldier's arms almost black (DC_Basrah_Nights:
+/// A + D = 0.39, with 2A = 0.34 of the texture in a shadow). A heuristic: by day A + D is 0.5 or more; it goes to none at 0.3.
+fn shadow_strength(a: Vec3, d: Vec3) -> f32 {
+    (((a + d).max_element() - 0.3) / 0.2).clamp(0.0, 1.0)
+}
+
 impl Atmosphere {
     /// What the original falls back to when the level says nothing (a guess: no level we read lacks them).
     pub fn of(world: &World) -> Atmosphere {
@@ -1336,16 +1460,21 @@ impl Atmosphere {
         // and the one facing the sun lin(2 min(A + D, 1)); the sun takes the difference
         let a = vec("renderer.ambientColor", [0.2; 3]) + vec("renderer.globalAmbientColor", [0.0; 3]);
         let d = vec("renderer.diffuseColor", [0.6; 3]);
+        // what the sun's shadow leaves of its light, in the same gamma terms
+        let kept = (1.0 - shadow_strength(a, d)) * d;
+        let lit = srgb(2.0 * (a + d).min(Vec3::ONE));
+        let unlit = srgb(2.0 * (a + kept).min(Vec3::ONE));
         Atmosphere {
             fog: vec("renderer.fogColorVec", [0.6, 0.62, 0.65]),
             fog_range: fog_range(world),
             view: world.db.globals.iter().rev().find(|c| c.command.eq_ignore_ascii_case("game.setViewDistance")).and_then(|c| c.args.first()?.parse().ok()).unwrap_or(800.0),
             ambient: LinearColor(srgb(2.0 * a)),
-            diffuse: LinearColor(srgb(2.0 * (a + d).min(Vec3::ONE)) - srgb(2.0 * a)),
+            diffuse: LinearColor(lit - unlit),
+            fill: LinearColor(unlit - srgb(2.0 * a)),
             sun: Vec3::new(sun.x, sun.y, -sun.z).normalize_or(Vec3::Y),
             tree: 2.0 * (a + 0.25 * d).min(Vec3::ONE),
-            shade: (a / (a + d).min(Vec3::ONE).max(Vec3::splat(1e-3))).min(Vec3::ONE),
-            tree_shade: (a / (a + 0.25 * d).min(Vec3::ONE).max(Vec3::splat(1e-3))).min(Vec3::ONE),
+            shade: ((a + kept) / (a + d).min(Vec3::ONE).max(Vec3::splat(1e-3))).min(Vec3::ONE),
+            tree_shade: ((a + 0.25 * kept) / (a + 0.25 * d).min(Vec3::ONE).max(Vec3::splat(1e-3))).min(Vec3::ONE),
             object_shadow: (Vec3::new(sun.x, 2.0 * sun.y, -sun.z).normalize_or(Vec3::Y), shadow_color(last("shadow.shadowColor").as_deref()) * 0.915),
             fixed: (a, d),
         }
@@ -1365,14 +1494,17 @@ impl Atmosphere {
     }
 
     /// The fog: the level's colour, linear with the distance (D3D's range fog), over `fog_range`
-    /// (times the settings' view distance, 1 as the original).
+    /// (times the settings' view distance, 1 as the original). Its `directional_light_exponent` carries the `aerial` setting to
+    /// `shaders/aerial.wesl` and the red of its `directional_light_color` the `clouds` setting to `shaders/clouds.wesl`: Bevy
+    /// reads them only with the alpha of `directional_light_color` above 0, and ours is 0.
     pub fn distance_fog(&self) -> DistanceFog {
-        let k = assets::graphics().view_distance;
+        let g = assets::graphics();
+        let k = g.view_distance;
         let (start, end) = (self.fog_range.0 * k, self.fog_range.1 * k);
-        DistanceFog { color: self.fog_colour(), falloff: FogFalloff::Linear { start, end }, ..default() }
+        DistanceFog { color: self.fog_colour(), falloff: FogFalloff::Linear { start, end }, directional_light_color: Color::linear_rgba(cloud_strength(), 0.0, 0.0, 0.0), directional_light_exponent: g.aerial, ..default() }
     }
 
-    /// What a world camera carries besides its projection: the fog, no tone mapping and an
+    /// What a world camera carries besides its projection: the fog, no tone mapping (nor its dithering, which does nothing without it) and an
     /// exposure of 1 (Bevy's is 1/(1.2 · 2^ev100)).
     /// In the enhanced profile, the HD Remaster's `renderer.mipmapBias -1` (`Settings/VideoDefault.con`):
     /// sharper textures; 0, the original's, otherwise. 4× MSAA unless the profile's
@@ -1380,7 +1512,7 @@ impl Atmosphere {
     pub fn camera(&self) -> impl Bundle {
         let g = crate::assets::graphics();
         let msaa = if g.msaa() { bevy::render::view::Msaa::Sample4 } else { bevy::render::view::Msaa::Off };
-        (self.distance_fog(), bevy::core_pipeline::tonemapping::Tonemapping::None, bevy::camera::Exposure { ev100: -(1.2f32).log2() }, bevy::render::camera::MipBias(g.mip_bias), msaa)
+        (self.distance_fog(), bevy::core_pipeline::tonemapping::Tonemapping::None, bevy::core_pipeline::tonemapping::DebandDither::Disabled, bevy::camera::Exposure { ev100: -(1.2f32).log2() }, bevy::render::camera::MipBias(g.mip_bias), msaa)
     }
 }
 
@@ -1427,26 +1559,57 @@ const WATER_TILE: f32 = 0.0625;
 /// D3D mixes its vertex fog in the screen's (gamma) space, Bevy's linear fog in linear space: far
 /// objects came out washed (Wake's houses at 250 m). Bevy's fog module, rewritten once it
 /// has loaded so that every `StandardMaterial` mixes like the original (the terrain and the water
-/// do their own fog). Returns when done.
-pub fn gamma_fog(asset_server: Res<AssetServer>, mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<bool>) {
-    const PATH: &str = "embedded://bevy_pbr/render/fog.wesl";
+/// do their own fog), and takes the aerial perspective's haze first (`aerial.wesl`), as the terrain does: what Bevy lights
+/// with its own material (vehicles, soldiers, statics without a lightmap) and the materials of ours that end in Bevy's fog
+/// (trees, baked statics, billboards). Bevy's nearer objects look crisper than with its own fog:
+/// that is the gamma mix, as the original, not a missing fog. Bevy's lighting module too: its fog takes the aerial
+/// perspective's glow towards the sun (it alone knows where the fragment is), and its sun the clouds' shadow at the
+/// fragment (`clouds.wesl`). Returns when both are done.
+pub fn gamma_fog(asset_server: Res<AssetServer>, mut shaders: ResMut<Assets<bevy::shader::Shader>>, mut done: Local<[bool; 2]>) {
+    const FOG: &str = "embedded://bevy_pbr/render/fog.wesl";
     const LINEAR: &str = "return vec4<f32>(mix(input_color.rgb, fog_color.rgb, fog_color.a), input_color.a);\n}\n\nfn exponential_fog";
     // (the exact sRGB curve, as Bevy decodes the textures and encodes the screen, not x^2.2)
-    const GAMMA: &str = "let a = clamp(input_color.rgb, vec3(0.0), vec3(1.0));\n    let b = clamp(fog_color.rgb, vec3(0.0), vec3(1.0));\n    let sa = select(1.055 * pow(a, vec3(1.0 / 2.4)) - 0.055, 12.92 * a, a <= vec3(0.0031308));\n    let sb = select(1.055 * pow(b, vec3(1.0 / 2.4)) - 0.055, 12.92 * b, b <= vec3(0.0031308));\n    let m = mix(sa, sb, fog_color.a);\n    return vec4<f32>(select(pow((m + 0.055) / 1.055, vec3(2.4)), m / 12.92, m <= vec3(0.04045)), input_color.a);\n}\n\nfn exponential_fog";
-    if *done {
-        return;
+    const GAMMA: &str = "let a = clamp(aerial_haze(input_color.rgb, distance), vec3(0.0), vec3(1.0));\n    let b = clamp(fog_color.rgb, vec3(0.0), vec3(1.0));\n    let sa = select(1.055 * pow(a, vec3(1.0 / 2.4)) - 0.055, 12.92 * a, a <= vec3(0.0031308));\n    let sb = select(1.055 * pow(b, vec3(1.0 / 2.4)) - 0.055, 12.92 * b, b <= vec3(0.0031308));\n    let m = mix(sa, sb, fog_color.a);\n    return vec4<f32>(select(pow((m + 0.055) / 1.055, vec3(2.4)), m / 12.92, m <= vec3(0.04045)), input_color.a);\n}\n\nfn exponential_fog";
+    // (the end of its imports, where the haze's goes)
+    const FOG_IMPORTS: &str = "    mesh_view_types::Fog,\n};\n";
+    const PBR: &str = "embedded://bevy_pbr/render/pbr_functions.wesl";
+    const PBR_IMPORTS: &str = "import bevy_render::maths::{E, powsafe};\n";
+    const SUN: &str = "        var light_contrib = lighting::directional_light(i, &lighting_input, enable_diffuse);\n";
+    const LINEAR_CALL: &str = "return package::render::fog::linear_fog(fog_params, input_color, distance, scattering);";
+    const GLOW_CALL: &str = "return package::render::fog::linear_fog(fog_params, vec4(aerial_glow(input_color.rgb, fragment_world_position), input_color.a), distance, scattering);";
+    if !done[0] {
+        done[0] = patch_shader(&asset_server, &mut shaders, FOG, |source| {
+            let at = source.find(FOG_IMPORTS)? + FOG_IMPORTS.len();
+            source.contains(LINEAR).then(|| format!("{}import bytefield::shaders::aerial::aerial_haze;\n{}", &source[..at], &source[at..]).replace(LINEAR, GAMMA))
+        });
     }
-    let handle: Handle<bevy::shader::Shader> = asset_server.load(PATH);
+    if !done[1] {
+        done[1] = patch_shader(&asset_server, &mut shaders, PBR, |source| {
+            let at = source.find(PBR_IMPORTS)? + PBR_IMPORTS.len();
+            (source.matches(SUN).count() == 1 && source.matches(LINEAR_CALL).count() == 1).then(|| {
+                format!("{}import bytefield::shaders::{{aerial::aerial_glow, clouds::cloud_light}};\n{}", &source[..at], &source[at..])
+                    .replace(SUN, &format!("        shadow *= cloud_light(i, in.world_position.xyz);\n{SUN}"))
+                    .replace(LINEAR_CALL, GLOW_CALL)
+            })
+        });
+    }
+}
+
+/// Rewrites one of Bevy's shader modules once it has loaded (`edit` gives the new source, or `None` if the module is not
+/// as expected: then it stays as it is, with a warning). Whether it is done (patched or left).
+fn patch_shader(asset_server: &AssetServer, shaders: &mut Assets<bevy::shader::Shader>, path: &'static str, edit: impl FnOnce(&str) -> Option<String>) -> bool {
+    let handle: Handle<bevy::shader::Shader> = asset_server.load(path);
     let Some(source) = shaders.get(&handle).and_then(|s| match &s.source {
         bevy::shader::Source::Wesl(src) => Some(src.to_string()),
         _ => None,
-    }) else { return };
-    *done = true;
-    if !source.contains(LINEAR) {
-        warn!("Bevy's fog module changed: the fog stays linear");
-        return;
+    }) else { return false };
+    match edit(&source) {
+        Some(new) => {
+            let _ = shaders.insert(handle.id(), bevy::shader::Shader::from_wesl(new, path));
+        }
+        None => warn!("Bevy's shader {path} changed: left as it is"),
     }
-    let _ = shaders.insert(handle.id(), bevy::shader::Shader::from_wesl(source.replace(LINEAR, GAMMA), PATH));
+    true
 }
 
 #[cfg(test)]

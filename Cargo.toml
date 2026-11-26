@@ -8,7 +8,7 @@ default-members = ["crates/vfs", "crates/con-lang", "crates/content", "crates/fo
 [workspace.package]
 edition = "2024"
 license = "GPL-3.0-or-later"
-version = "0.1.0"
+version = "0.2.0"
 
 # dependencies (Bevy) optimised even in debug builds; our code stays quick to compile
 [profile.dev.package."*"]

@@ -1,4 +1,4 @@
-//! A bots3 mind in a turret of an aircraft against an enemy aircraft flying behind it. Skipped without the real data.
+//! A bots mind in a turret of an aircraft against an enemy aircraft flying behind it. Skipped without the real data.
 use bytefield_sim::soldier::axis;
 
 type V3 = [f32; 3];
@@ -21,11 +21,11 @@ fn level_stick(rows: [V3; 3], before: &mut [V3; 3], vel: V3, y: f32, target_y: f
     vec![(axis::THROTTLE, (0.6 + 0.05 * (speed - now)).clamp(0.0, 1.0)), (1, -pitch.clamp(-1.0, 1.0)), (2, bank.clamp(-1.0, 1.0))]
 }
 
-/// B26: the Falcon's lower turret (seat 2), with a bots3 mind in it and the pilot's seat flown straight and level from outside, shoots at a
+/// B26: the Falcon's lower turret (seat 2), with a bots mind in it and the pilot's seat flown straight and level from outside, shoots at a
 /// TIE fighter flying 250 m behind it, in the same direction, and hits it. (Its upper turret, seat 1, cannot point below the horizon:
 /// no hits from there, which is why the seat is this one.)
 #[test]
-fn a_bots3_gunner_in_the_falcons_lower_turret_hits_a_tie_behind_it() {
+fn a_bots_gunner_in_the_falcons_lower_turret_hits_a_tie_behind_it() {
     let game = bytefield_testdata::require!(Gc);
     let w = bytefield_sim::World::load(&game, "GCMOD", "GC_Tatooine", "conquest").unwrap();
     let mut seeds_with_hits = 0;
@@ -33,7 +33,7 @@ fn a_bots3_gunner_in_the_falcons_lower_turret_hits_a_tie_behind_it() {
         let mut s = bytefield_sim::Sim::new(&w, 1.0 / 30.0);
         s.round.playing = true;
         s.start_conquest();
-        s.set_minds(1, bytefield_sim::bots3::maker(&w.level.name, seed));
+        s.set_minds(1, bytefield_sim::bots::maker(&w.level.name, seed));
         let (kp, kb, kg) = (s.join(1, true), s.join(2, true), s.join(1, true));
         let alive = |s: &bytefield_sim::Sim, k: usize| s.players[k].soldier.filter(|_| s.players[k].alive);
         let mut soldiers = None;
@@ -66,7 +66,7 @@ fn a_bots3_gunner_in_the_falcons_lower_turret_hits_a_tie_behind_it() {
             for (c, soldier, before) in [(ca, sp, &mut before_a), (cb, sb, &mut before_b)] {
                 let b = &s.vehicles[c].craft.body;
                 let axes = level_stick(b.rows, before, b.vel, b.pos[1], y, 110.0);
-                s.vehicles[soldier].movement.as_mut().unwrap().set_input(&axes);
+                s.vehicles[soldier].soldier_mut().unwrap().set_input(&axes);
             }
             s.step();
             for f in s.journal.fired.get(seen..).unwrap_or(&[]) {

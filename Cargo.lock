@@ -1093,7 +1093,7 @@ dependencies = [
  "approx",
  "bevy_reflect",
  "derive_more",
- "glam",
+ "glam 0.33.12",
  "libm",
  "rand",
  "serde",
@@ -1122,7 +1122,7 @@ dependencies = [
  "bytemuck",
  "derive_more",
  "encase",
- "glam",
+ "glam 0.33.12",
  "half",
  "hexasphere",
  "thiserror 2.0.21",
@@ -1252,7 +1252,7 @@ dependencies = [
  "downcast-rs",
  "erased-serde",
  "foldhash 0.2.0",
- "glam",
+ "glam 0.33.12",
  "indexmap",
  "inventory",
  "petgraph",
@@ -1317,7 +1317,7 @@ dependencies = [
  "derive_more",
  "downcast-rs",
  "encase",
- "glam",
+ "glam 0.33.12",
  "image",
  "indexmap",
  "itertools 0.14.0",
@@ -1796,7 +1796,7 @@ checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
 name = "bytefield-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bevy",
  "bytefield-con",
@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "bytefield-con"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytefield-vfs",
  "serde",
@@ -1824,7 +1824,7 @@ dependencies = [
 
 [[package]]
 name = "bytefield-content"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytefield-con",
  "md-5",
@@ -1835,11 +1835,11 @@ dependencies = [
 
 [[package]]
 name = "bytefield-extract"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "bytefield-formats"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytefield-testdata",
  "png",
@@ -1847,7 +1847,7 @@ dependencies = [
 
 [[package]]
 name = "bytefield-py"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytefield-sim",
  "bytefield-world",
@@ -1858,7 +1858,7 @@ dependencies = [
 
 [[package]]
 name = "bytefield-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bincode",
  "bytefield-sim",
@@ -1869,7 +1869,7 @@ dependencies = [
 
 [[package]]
 name = "bytefield-sim"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bincode",
  "bytefield-con",
@@ -1877,25 +1877,31 @@ dependencies = [
  "bytefield-testdata",
  "bytefield-vfs",
  "bytefield-world",
+ "glam 0.30.10",
+ "glam 0.33.12",
+ "landmark",
+ "libm",
  "pprof",
+ "rerecast",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
 name = "bytefield-testdata"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "bytefield-vfs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "lzokay-native",
 ]
 
 [[package]]
 name = "bytefield-world"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytefield-con",
  "bytefield-formats",
@@ -2700,6 +2706,15 @@ checksum = "1033caf0b349c518623b5396bfb2cf0bddf44f0306d543a250e5743297aafd10"
 
 [[package]]
 name = "glam"
+version = "0.30.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19fc433e8437a212d1b6f1e68c7824af3aed907da60afa994e7f542d18d12aa9"
+dependencies = [
+ "serde_core",
+]
+
+[[package]]
+name = "glam"
 version = "0.33.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37bfe73dc8ec21f54d181e5a60554327ec3f1c600c455a75ccbfc65d2106a6c4"
@@ -2836,7 +2851,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163385eff5a0cf606ebe2c10b3a44ab02f4306e83fbd068a64f5e1d72a3049ac"
 dependencies = [
  "constgebra",
- "glam",
+ "glam 0.33.12",
  "tinyvec",
 ]
 
@@ -3151,6 +3166,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "884f3e747ed2dcee867cda1b0c31a048f9e20de2d916a248949319921a2e666e"
 dependencies = [
  "regex-automata",
+]
+
+[[package]]
+name = "landmark"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "323f29ce78d696b4ce0da4e9a9471c0d2f18cb0af87794073df6a235f8321c09"
+dependencies = [
+ "glam 0.30.10",
+ "log",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4416,6 +4442,20 @@ name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
+
+[[package]]
+name = "rerecast"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71fb021f09acc9f578681db0a54ba16e952565fdc07ab963278d0f93a6b07b14"
+dependencies = [
+ "bitflags 2.13.2",
+ "glam 0.33.12",
+ "libm",
+ "slotmap",
+ "thiserror 2.0.21",
+ "tracing",
+]
 
 [[package]]
 name = "ron"

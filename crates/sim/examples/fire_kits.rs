@@ -46,13 +46,13 @@ fn main() {
                 };
                 s.vehicles[sol].team = team as u32;
                 s.vehicles[sol].give_kit(w.kit_weapons(kit), Some(&weapon));
-                s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
-                let first_held = s.vehicles[sol].movement.as_ref().and_then(|m| m.weapon.as_ref()).map(|x| x.template.name.clone());
-                let projectile = s.vehicles[sol].movement.as_ref().and_then(|m| m.weapon.as_ref()).map_or(String::new(), |x| x.template.projectile.clone());
+                s.vehicles[sol].soldier_mut().unwrap().has_player = true;
+                let first_held = s.vehicles[sol].soldier().and_then(|m| m.weapon.as_ref()).map(|x| x.template.name.clone());
+                let projectile = s.vehicles[sol].soldier().and_then(|m| m.weapon.as_ref()).map_or(String::new(), |x| x.template.projectile.clone());
                 let (f0, e0, h0) = (s.journal.fired.len(), s.journal.explosions.len(), s.journal.hit_log.len());
                 for f in 0..(seconds * 30.0) as usize {
                     let v = if f % 12 < 2 { 1.0 } else { 0.0 };
-                    s.vehicles[sol].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, v)]);
+                    s.vehicles[sol].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, v)]);
                     s.step();
                 }
                 let fired: Vec<_> = s.journal.fired[f0..].iter().filter(|f| f.1 == sol).collect();

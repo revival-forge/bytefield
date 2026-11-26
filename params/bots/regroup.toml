@@ -1,0 +1,4 @@
+# A rival in the basket: the anchor with the squads regrouping short of an enemy flag (the one variant that beat the noise in
+# phase 6, +11.7 tickets).
+mind = "bots:regroup+no-prone-fight+no-fps"
+about = "anchor 0 with regroup"

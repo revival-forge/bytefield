@@ -297,7 +297,7 @@ fn main() {
                 if (rv.next() % 100) >= vehicles {
                     continue;
                 }
-                let free: Vec<usize> = s.vehicles.iter().enumerate().filter(|(n, v)| *n != i && v.in_world() && v.movement.is_none() && !v.armor.as_ref().is_some_and(|a| a.destroyed) && v.entry.occupants.iter().any(|o| o.is_none())).map(|(n, _)| n).collect();
+                let free: Vec<usize> = s.vehicles.iter().enumerate().filter(|(n, v)| *n != i && v.in_world() && v.soldier().is_none() && !v.armor.as_ref().is_some_and(|a| a.destroyed) && v.entry.occupants.iter().any(|o| o.is_none())).map(|(n, _)| n).collect();
                 let Some(&v) = free.get((rv.next() % free.len().max(1) as u64) as usize) else { continue };
                 let seat = s.vehicles[v].entry.occupants.iter().position(|o| o.is_none()).unwrap();
                 s.enter(i, v, seat);

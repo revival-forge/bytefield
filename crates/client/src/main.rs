@@ -2,7 +2,7 @@
 //! simulation (`bytefield-sim`) at 30 Hz and puts the player in it as a soldier of its team.
 //!
 //!     bytefield <game_dir> <mod> <level> [--mode conquest] [--team 1|2] [--kit N] [--third-person]
-//!            [--bots N] (default bots3) [--sens X] [--invert-y] [--script "0-60:w;70:e"] [--screenshot out.png] [--shot-tick N] [--chase-yaw D]
+//!            [--bots N] (default bots) [--sens X] [--invert-y] [--script "0-60:w;70:e"] [--screenshot out.png] [--shot-tick N] [--chase-yaw D]
 //!     bytefield <game_dir> <mod> <level> --fly [--at x,y,z] [--look x,y,z] [--screenshot out.png]
 //!     bytefield <game_dir> <mod> <level> --host [--port 14567] [--bots N] [play options]
 //!     bytefield <game_dir> --connect host[:port] [--team 1|2] [--kit N] [play options]
@@ -27,6 +27,7 @@ mod backdrop;
 mod bmfont;
 mod controls;
 mod debug;
+mod navview;
 mod effects;
 mod envmap;
 mod first_screen;
@@ -34,6 +35,9 @@ mod flags;
 mod gauges;
 mod submarine;
 mod graphics;
+mod decals;
+mod heat;
+mod grass;
 mod hud;
 mod lang;
 mod level;
@@ -52,6 +56,7 @@ mod sound;
 mod replay;
 mod tickets;
 mod userlog;
+mod warmup;
 mod weapon;
 
 use std::path::PathBuf;
@@ -158,8 +163,8 @@ fn parse_args() -> Result<Args, String> {
         })
     };
     let num = |n: &str| opt(n).map(|v| v.parse::<u64>().map_err(|_| format!("{n}: not a number: {v}"))).transpose();
-    // bots3 plays the bots unless `--bot-ai bots2` asks for the other
-    bytefield_sim::bots3::use_by_default(opt("--bot-ai").is_none_or(|v| v.starts_with("bots3")));
+    // the bots play unless `--bot-ai` asks for another AI
+    bytefield_sim::bots::use_by_default(opt("--bot-ai").is_none_or(|v| bytefield_sim::bots::is_name(&v)));
     Ok(Args {
         argv: replay::strip_check_args(&a),
         replay,
@@ -318,6 +323,7 @@ fn teardown(mut commands: Commands, round: Option<Res<menu::Round>>, roots: Quer
     commands.remove_resource::<menu::Teardown>();
     commands.remove_resource::<menu::JustLoaded>();
     commands.remove_resource::<level::Atmosphere>();
+    commands.remove_resource::<grass::Grass>();
     commands.remove_resource::<assets::Cache>();
     commands.insert_resource(ClearColor(Color::BLACK));
 }
@@ -440,6 +446,7 @@ fn launch(mut args: Args, sp: &mut Spawn) -> Result<(), String> {
     let mut cache = assets::Cache::default();
     cache.set_alternative_paths(world.db.globals.iter().filter(|c| c.command.eq_ignore_ascii_case("textureManager.alternativePath")).filter_map(|c| c.args.first()).map(String::as_str));
     cache.tree_light = Some(level::Atmosphere::of(world).tree_light());
+    cache.set_alpha_tests(&world.db);
     level::spawn(world, commands, &mut sp.meshes, &mut sp.materials, &mut sp.terrain_materials, &mut sp.water_materials, &mut sp.tree_materials, &mut sp.baked_materials, &mut sp.billboard_materials, &mut sp.images, &mut cache);
     commands.insert_resource(cache);
     commands.insert_resource(envmap::Cube::of(world, &mut sp.images));
@@ -461,7 +468,7 @@ fn launch(mut args: Args, sp: &mut Spawn) -> Result<(), String> {
     let on_orig = false;
     let choose = !on_orig && args.choose.unwrap_or(args.script.is_none() && args.screenshot.is_none() && args.steps.is_none());
     replay::set_launch(args.argv.clone(), choose);
-    play::start(play::Setup { world, team: args.team, kit: args.kit, script: args.script, third_person: args.third_person || args.chase_yaw != 0.0, chase_yaw: args.chase_yaw, fixed: args.at.map(|at| level::free_camera(world, at, args.look.unwrap_or(at + Vec3::Z * 100.0))), sens: args.sens.unwrap_or(1.0), invert_y: args.invert_y, bots: args.bots, rules: args.rules, welcome: args.welcome,
+    play::start(play::Setup { world, team: args.team, kit: args.kit, kit_given: args.choose == Some(false), script: args.script, third_person: args.third_person || args.chase_yaw != 0.0, chase_yaw: args.chase_yaw, fixed: args.at.map(|at| level::free_camera(world, at, args.look.unwrap_or(at + Vec3::Z * 100.0))), sens: args.sens.unwrap_or(1.0), invert_y: args.invert_y, bots: args.bots, rules: args.rules, welcome: args.welcome,
         choose, net, replay: args.replay.clone(),
     }, commands);
     Ok(())
@@ -582,7 +589,7 @@ fn main() {
     let pools = settings::task_pools(saved.compute_threads, std::env::var("BYTEFIELD_COMPUTE_THREADS").ok().and_then(|n| n.parse().ok()));
     // (a scripted run, captures: every pipeline ready the frame it is first needed. Compiled in the background, a mesh with a
     // new variant was missing for a second or two: DC's M67, `envmap` with lightmap UVs)
-    // TODO: in a round too? The original draws all at once; ours shows nothing until the variant is ready
+    // (in a round, compiled in the background, after the level's warm-up: `warmup.rs`)
     let scripted = args.script.is_some() || args.steps.is_some();
     let mut app = App::new();
     app.insert_resource(saved);
@@ -591,8 +598,15 @@ fn main() {
     }
     app.add_plugins(DefaultPlugins.set(WindowPlugin { primary_window: Some(Window { title: crate::lang::PROJECT.into(), resolution: args.size.into(), present_mode, mode: window_mode(saved_fullscreen), ..default() }), ..default() }).set(TaskPoolPlugin { task_pool_options: pools }).set(userlog::plugin()).set(bevy::render::RenderPlugin { synchronous_pipeline_compilation: scripted, ..default() }))
         .add_plugins((tickets::TicketsPlugin, bmfont::BmFontPlugin))
-        .add_plugins((play::PlayPlugin, sound::SoundPlugin, hud::HudPlugin, minimap::MinimapPlugin, respawn::RespawnPlugin, briefing::BriefingPlugin, menu::MenuPlugin, gauges::GaugesPlugin, submarine::SubmarinePlugin, artview::ArtViewPlugin, debug::DebugPlugin, movie::MoviePlugin, flags::FlagsPlugin));
+        .add_plugins((play::PlayPlugin, sound::SoundPlugin, hud::HudPlugin, minimap::MinimapPlugin, respawn::RespawnPlugin, briefing::BriefingPlugin, menu::MenuPlugin, gauges::GaugesPlugin, submarine::SubmarinePlugin, artview::ArtViewPlugin, debug::DebugPlugin, navview::NavViewPlugin, movie::MoviePlugin, flags::FlagsPlugin));
     // (the shaders before their materials: these load them as they are added)
+    // (imported by the others, loaded for good)
+    bevy::asset::embedded_asset!(app, "shaders/aerial.wesl");
+    let aerial: Handle<bevy::shader::Shader> = bevy::asset::load_embedded_asset!(&app, "shaders/aerial.wesl");
+    std::mem::forget(aerial);
+    bevy::asset::embedded_asset!(app, "shaders/clouds.wesl");
+    let clouds: Handle<bevy::shader::Shader> = bevy::asset::load_embedded_asset!(&app, "shaders/clouds.wesl");
+    std::mem::forget(clouds);
     bevy::asset::embedded_asset!(app, "shaders/terrain.wesl");
     bevy::asset::embedded_asset!(app, "shaders/water.wesl");
     bevy::asset::embedded_asset!(app, "shaders/tree.wesl");
@@ -600,9 +614,14 @@ fn main() {
     bevy::asset::embedded_asset!(app, "shaders/baked.wesl");
     bevy::asset::embedded_asset!(app, "shaders/particle.wesl");
     bevy::asset::embedded_asset!(app, "shaders/envmap.wesl");
-    app.add_plugins((shadows::ShadowsPlugin, skin::SkinPlugin, backdrop::BackdropPlugin));
+    bevy::asset::embedded_asset!(app, "shaders/grass.wesl");
+    bevy::asset::embedded_asset!(app, "shaders/grass_prepass.wesl");
+    bevy::asset::embedded_asset!(app, "shaders/heat.wesl");
+    app.add_plugins(bevy::core_pipeline::fullscreen_material::FullscreenMaterialPlugin::<heat::HeatHaze>::default());
+    app.init_resource::<heat::Blasts>();
+    app.add_plugins((shadows::ShadowsPlugin, skin::SkinPlugin, backdrop::BackdropPlugin, warmup::WarmupPlugin));
     app.set_error_handler(log_system_error);
-    app.add_plugins((MaterialPlugin::<level::TerrainMaterial>::default(), MaterialPlugin::<level::WaterMaterial>::default(), MaterialPlugin::<level::TreeMaterial>::default(), MaterialPlugin::<level::BillboardMaterial>::default(), MaterialPlugin::<level::BakedMaterial>::default(), MaterialPlugin::<effects::ParticleMaterial>::default(), MaterialPlugin::<envmap::EnvMapMaterial>::default()));
+    app.add_plugins((MaterialPlugin::<level::TerrainMaterial>::default(), MaterialPlugin::<level::WaterMaterial>::default(), MaterialPlugin::<level::TreeMaterial>::default(), MaterialPlugin::<level::BillboardMaterial>::default(), MaterialPlugin::<level::BakedMaterial>::default(), MaterialPlugin::<effects::ParticleMaterial>::default(), MaterialPlugin::<envmap::EnvMapMaterial>::default(), MaterialPlugin::<grass::GrassMaterial>::default()));
     app
         .add_systems(Startup, (assets::bc_support, setup).chain())
         .add_systems(Update, ((fly, screenshot, log_status).chain(), level::gamma_fog))
@@ -618,8 +637,8 @@ fn main() {
         .add_observer(graphics::no_indirect_drawing)
         .add_systems(PreUpdate, graphics::ui_in_gamma)
         .add_systems(PostUpdate, level::trim_cascades.after(bevy::light::SimulationLightSystems::UpdateDirectionalLightCascades).before(bevy::light::SimulationLightSystems::UpdateLightFrusta))
-        .add_systems(PostUpdate, (level::follow_sky, level::fade_trees, level::sway_trees, level::water_time, level::shadow_casters, level::reflect_water, graphics::apply, graphics::render_scale).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
-        .add_systems(PostUpdate, (graphics::taa_reset, graphics::dof, shadows::update, envmap::swap).after(bevy::transform::TransformSystems::Propagate))
+        .add_systems(PostUpdate, (level::follow_sky, level::fade_trees, level::sway_trees, level::water_time, level::terrain_relief, grass::grow, level::shadow_casters, level::reflect_water, graphics::apply, graphics::render_scale).before(bevy::transform::TransformSystems::Propagate).before(bevy::camera::CameraUpdateSystems))
+        .add_systems(PostUpdate, (graphics::taa_reset, graphics::dof, shadows::update, envmap::swap, heat::update).after(bevy::transform::TransformSystems::Propagate))
         .add_systems(Last, quit_now)
         .run();
 }

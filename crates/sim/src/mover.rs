@@ -24,17 +24,40 @@ pub struct Surroundings<'a> {
     pub materials: &'a Materials,
 }
 
+/// The physical object: what the flight physics and the collision step and test, without the role it plays (a soldier, a
+/// vehicle, or a rigid projectile's body: [`crate::projectile::Projectile::rigid`]).
 #[derive(Debug, Clone, Serialize)]
-pub struct Vehicle {
+pub struct Body {
     pub template: String,
     pub craft: Craft,
     pub contacts: Vec<Contactor>,
     /// `getBoundingRadius` (the broad phase and the obstacles' collision LOD)
     pub radius: f32,
-    /// a soldier's player, input and animation state (`soldier::Movement`)
-    pub movement: Option<crate::soldier::Movement>,
     /// its place in `Sim.vehicles` (who another one collided with)
     pub id: usize,
+    /// its parts solved in this frame's checks already ([`check_all`])
+    #[serde(skip)]
+    pub solved: bool,
+    /// no mobile physics (`hasMobilePhysics` 0: a fixed gun): it is not integrated nor collides;
+    /// the level's obstacles already hold its geometry (`World::obstacles`)
+    #[serde(default)]
+    pub fixed: bool,
+    /// its physics off (the physical object's disable physics: a bot's `Medium` move slides it by
+    /// hand): not integrated, and it collides with nothing
+    #[serde(default)]
+    pub physics_off: bool,
+}
+
+/// A soldier or a vehicle in `Sim.vehicles`: its [`Body`] and its role (the soldier's state, seats, weapons, armor).
+/// It dereferences to its body, so `v.craft` reads as before: the physics is most of what is done with one, and the
+/// body's fields stay where a thousand uses expect them. (A borrow of a body's field and a role's one at once goes
+/// through `v.body` explicitly.)
+#[derive(Debug, Clone, Serialize)]
+pub struct Vehicle {
+    #[serde(flatten)]
+    pub body: Body,
+    /// a soldier's player, input and animation state (`soldier::Movement`); outside the crate, [`Vehicle::soldier`]
+    pub(crate) movement: Option<crate::soldier::Movement>,
     /// `hasArmor`: hit points, critical damage, the wreck
     pub armor: Option<crate::damage::Armor>,
     /// gone from the world (`destroyObject`: the wreck's time ran out); kept in `Sim.vehicles`
@@ -59,20 +82,68 @@ pub struct Vehicle {
     /// sim last took them
     pub weapons: Vec<(usize, crate::firearms::FireArms)>,
     pub shots: Vec<(String, crate::projectile::Shot, usize)>,
-    /// its parts solved in this frame's checks already ([`check_all`])
-    #[serde(skip)]
-    pub solved: bool,
-    /// no mobile physics (`hasMobilePhysics` 0: a fixed gun): it is not integrated nor collides;
-    /// the level's obstacles already hold its geometry (`World::obstacles`)
-    #[serde(default)]
-    pub fixed: bool,
-    /// its physics off (the physical object's disable physics: a bot's `Medium` move slides it by
-    /// hand): not integrated, and it collides with nothing
-    #[serde(default)]
-    pub physics_off: bool,
 }
 
-impl Vehicle {
+impl std::ops::Deref for Vehicle {
+    type Target = Body;
+    #[inline]
+    fn deref(&self) -> &Body {
+        &self.body
+    }
+}
+
+impl std::ops::DerefMut for Vehicle {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Body {
+        &mut self.body
+    }
+}
+
+/// What the object vs object check needs of a collider: its body, and the one bit of its role it looks at.
+pub trait Collider {
+    fn body(&self) -> &Body;
+    fn body_mut(&mut self) -> &mut Body;
+    /// the vehicle a soldier left less than 2 s ago (its `handleCollision` against it returns at once)
+    fn left(&self) -> Option<usize>;
+}
+
+impl Collider for Body {
+    #[inline]
+    fn body(&self) -> &Body {
+        self
+    }
+    #[inline]
+    fn body_mut(&mut self) -> &mut Body {
+        self
+    }
+    #[inline]
+    fn left(&self) -> Option<usize> {
+        None
+    }
+}
+
+impl Collider for Vehicle {
+    #[inline]
+    fn body(&self) -> &Body {
+        &self.body
+    }
+    #[inline]
+    fn body_mut(&mut self) -> &mut Body {
+        &mut self.body
+    }
+    #[inline]
+    fn left(&self) -> Option<usize> {
+        self.entry.exited.map(|e| e.0)
+    }
+}
+
+impl Body {
+    /// A soldier contactor among its parts: what the physics treats as a soldier (no rotation, no sleep, pushing apart).
+    /// Not the role ([`Vehicle::soldier`]): a vehicle may carry a contactor of type `soldier` too.
+    pub fn has_soldier_contact(&self) -> bool {
+        self.contacts.iter().any(|c| c.soldier)
+    }
+
     /// The parts under a moving one (a front wheel under its steering bundle) where its angles
     /// put them now, in the root's frame.
     pub fn place_contacts(&mut self) {
@@ -129,11 +200,6 @@ impl Vehicle {
         })
     }
 
-    /// In the physics: not removed, and not a soldier inside a vehicle (`disablePhysicsOnSoldier`).
-    pub fn in_world(&self) -> bool {
-        !self.removed && self.entry.inside.is_none()
-    }
-
     /// Turn every engine on or off (an engine runs only with a driver).
     pub fn set_engines_on(&mut self, on: bool) {
         for p in self.craft.parts.iter_mut() {
@@ -143,36 +209,20 @@ impl Vehicle {
         }
     }
 
+    /// The parts' update of a body with no soldier in it (a rigid projectile's): [`Vehicle::update_parts`] without the input.
     pub fn update_parts(&mut self, dt: f32, ground: &dyn Ground) {
+        self.move_parts(dt, ground);
+        self.walk_on();
+    }
+
+    /// Bundles, engines, wings, floats, and the parts under them where they are now.
+    fn move_parts(&mut self, dt: f32, ground: &dyn Ground) {
         self.craft.update_parts(dt, &|x, z| Some(ground.height_and_normal(x, z).0));
         self.place_contacts();
-        // a soldier's input: the speed the ground under it should
-        // have, and a push of 0.75 of it
-        if let Some(m) = self.movement.as_mut()
-            && let Some(c) = self.contacts.iter_mut().find(|c| c.soldier)
-        {
-            let g = crate::rigid::GRAVITY_Y;
-            let p = self.craft.body.pos;
-            m.height_over_terrain = p[1] - ground.height_and_normal(p[0], p[2]).0;
-            if m.has_player && m.driven {
-                // the frame updates come first, then
-                // `simulatePlayerUpdate`: the triggers, the input, then `performHandleUpdate`
-                m.run_frames();
-                m.triggers(&self.craft.body, g);
-                c.response.walk = m.handle_player_input(&mut self.craft.body, &mut c.response, ground, dt);
-                m.handle_update(&mut self.craft.body, &mut c.response, ground, dt);
-                m.weapon_update(&self.craft.body, g, dt);
-            } else {
-                m.handle_update(&mut self.craft.body, &mut c.response, ground, dt);
-                m.weapon_frame(&self.craft.body, g, dt);
-                if m.driven {
-                    c.response.walk = m.handle_player_input(&mut self.craft.body, &mut c.response, ground, dt);
-                }
-            }
-        }
-        if let Some(d) = self.movement.as_mut().and_then(|m| m.set_drag.take()) {
-            self.craft.body.drag = d;
-        }
+    }
+
+    /// A soldier contactor's ground speed: the walk its input asked for.
+    fn walk_on(&mut self) {
         for c in self.contacts.iter_mut().filter(|c| c.soldier) {
             c.response.surface_speed = c.response.walk;
         }
@@ -183,7 +233,7 @@ impl Vehicle {
             return;
         }
         // soldiers never count down to sleep
-        let keep = self.is_soldier().then_some(self.craft.body.sleepiness);
+        let keep = self.has_soldier_contact().then_some(self.craft.body.sleepiness);
         // nor turn from a push off their centre (an explosion's): the server's soldier never has
         // a rotational velocity (dmg_soldier_grenade); the soldier's update handling sets its
         // matrix (upright, not done for a dead one: its heading turns with the death)
@@ -243,6 +293,58 @@ impl Vehicle {
         let drive = self.drive_wheels();
         let fb = contact::solve_pass(&mut self.contacts, &mut self.craft.body, GRAVITY_Y, dt, drive.as_ref());
         self.feed_engine(fb);
+    }
+}
+
+impl Vehicle {
+    /// Its soldier state when it is a soldier (the role a `Vehicle` plays: a soldier or a vehicle).
+    /// Not the same test as [`Body::has_soldier_contact`], which looks for a soldier contactor (the physics' view).
+    pub fn soldier(&self) -> Option<&crate::soldier::Movement> {
+        self.movement.as_ref()
+    }
+
+    pub fn soldier_mut(&mut self) -> Option<&mut crate::soldier::Movement> {
+        self.movement.as_mut()
+    }
+
+    /// In the physics: not removed, and not a soldier inside a vehicle (`disablePhysicsOnSoldier`).
+    pub fn in_world(&self) -> bool {
+        !self.removed && self.entry.inside.is_none()
+    }
+
+    /// The parts' update with the soldier's input in between: [`Body::update_parts`] with what a soldier does before its
+    /// contactors take its walk.
+    pub fn update_parts(&mut self, dt: f32, ground: &dyn Ground) {
+        self.body.move_parts(dt, ground);
+        // a soldier's input: the speed the ground under it should
+        // have, and a push of 0.75 of it
+        let Vehicle { body, movement, .. } = self;
+        if let Some(m) = movement.as_mut()
+            && let Some(c) = body.contacts.iter_mut().find(|c| c.soldier)
+        {
+            let g = crate::rigid::GRAVITY_Y;
+            let p = body.craft.body.pos;
+            m.height_over_terrain = p[1] - ground.height_and_normal(p[0], p[2]).0;
+            if m.has_player && m.driven {
+                // the frame updates come first, then
+                // `simulatePlayerUpdate`: the triggers, the input, then `performHandleUpdate`
+                m.run_frames();
+                m.triggers(&body.craft.body, g);
+                c.response.walk = m.handle_player_input(&mut body.craft.body, &mut c.response, ground, dt);
+                m.handle_update(&mut body.craft.body, &mut c.response, ground, dt);
+                m.weapon_update(&body.craft.body, g, dt);
+            } else {
+                m.handle_update(&mut body.craft.body, &mut c.response, ground, dt);
+                m.weapon_frame(&body.craft.body, g, dt);
+                if m.driven {
+                    c.response.walk = m.handle_player_input(&mut body.craft.body, &mut c.response, ground, dt);
+                }
+            }
+        }
+        if let Some(d) = self.soldier_mut().and_then(|m| m.set_drag.take()) {
+            self.craft.body.drag = d;
+        }
+        self.body.walk_on();
     }
 
     /// One whole frame for this vehicle alone (parts, integration, collision).
@@ -305,7 +407,9 @@ pub fn shares(m_own: f32, m_other: f32, frac: f32) -> (f32, f32) {
 /// set back by one step of the *relative* speed to each vertex. A hit gives both parts an
 /// impulse with the same normal (the face's), each its share of the relative velocity at the
 /// point and of the depth: p's along the normal, q's against it.
-pub fn check_vertices_on_faces(p: &mut Vehicle, x: usize, q: &mut Vehicle, y: usize, materials: &Materials, dt: f32, frac: f32) {
+pub fn check_vertices_on_faces<P: Collider, Q: Collider>(p: &mut P, x: usize, q: &mut Q, y: usize, materials: &Materials, dt: f32, frac: f32) {
+    let (p_left, q_left) = (p.left(), q.left());
+    let (p, q) = (p.body_mut(), q.body_mut());
     let c = &p.contacts[x];
     let mut n = c.vertices.len();
     if n == 0 {
@@ -354,7 +458,7 @@ pub fn check_vertices_on_faces(p: &mut Vehicle, x: usize, q: &mut Vehicle, y: us
     let (pid, qid) = (p.id, q.id);
     // a soldier against the vehicle it left less than 2 s ago: its `handleCollision` returns 1
     // before anything: the impulse, but no ground and no crash of its own
-    let (p_quiet, q_quiet) = (p.entry.exited.is_some_and(|e| e.0 == qid), q.entry.exited.is_some_and(|e| e.0 == pid));
+    let (p_quiet, q_quiet) = (p_left == Some(qid), q_left == Some(pid));
     for (i, hit, vr, face) in hits {
         if p.contacts[x].soldier && len2(vr) > HIT_SPEED2 && !p_quiet {
             crate::soldier::handle_collision(&mut p.contacts[x].response, face, false);
@@ -397,18 +501,18 @@ pub fn check_vertices_on_faces(p: &mut Vehicle, x: usize, q: &mut Vehicle, y: us
 /// with a root on one side, near enough (bounding radii plus the speeds), and not two tiny meshes
 /// (≤ 3 vertices each). Which side's vertices go against the other's faces, and with what
 /// share, depends on the roots' bounding radii.
-pub fn check_part_vs_mover(a: &mut Vehicle, ka: usize, b: &mut Vehicle, materials: &Materials, dt: f32) {
-    let (va2, vb2) = (len2(a.craft.body.vel), len2(b.craft.body.vel));
-    let (_, pa) = a.contacts[ka].frame(&a.craft.body);
-    for kb in 0..b.contacts.len() {
-        let (ca, cb) = (&a.contacts[ka], &b.contacts[kb]);
+pub fn check_part_vs_mover<A: Collider, B: Collider>(a: &mut A, ka: usize, b: &mut B, materials: &Materials, dt: f32) {
+    let (va2, vb2) = (len2(a.body().craft.body.vel), len2(b.body().craft.body.vel));
+    let (_, pa) = a.body().contacts[ka].frame(&a.body().craft.body);
+    for kb in 0..b.body().contacts.len() {
+        let (ca, cb) = (&a.body().contacts[ka], &b.body().contacts[kb]);
         if !(ca.is_root || cb.is_root) {
             continue;
         }
         if ca.radius < MIN_PART_RADIUS && cb.radius < MIN_PART_RADIUS {
             continue;
         }
-        let (_, pb) = cb.frame(&b.craft.body);
+        let (_, pb) = cb.frame(&b.body().craft.body);
         let d = [pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]];
         let reach = ca.radius + va2 * dt * REACH_SPEED + cb.radius + vb2 * dt * REACH_SPEED;
         if len2(d) > reach * reach {
@@ -423,7 +527,7 @@ pub fn check_part_vs_mover(a: &mut Vehicle, ka: usize, b: &mut Vehicle, material
         // obstacle the shield carries is no projectile)
         match (ca.soldier, cb.soldier) {
             (true, true) => {
-                crate::soldier::push_apart(&mut a.craft.body, &mut b.craft.body);
+                crate::soldier::push_apart(&mut a.body_mut().craft.body, &mut b.body_mut().craft.body);
                 continue;
             }
             (true, false) | (false, true) if ca.projectile || cb.projectile => continue,
@@ -437,7 +541,7 @@ pub fn check_part_vs_mover(a: &mut Vehicle, ka: usize, b: &mut Vehicle, material
             }
             _ => {}
         }
-        let (ra, rb) = (a.radius, b.radius);
+        let (ra, rb) = (a.body().radius, b.body().radius);
         if rb <= ra {
             if rb <= ra * SMALL_SHARE {
                 check_vertices_on_faces(b, kb, a, ka, materials, dt, 1.0);
@@ -456,7 +560,7 @@ pub fn check_part_vs_mover(a: &mut Vehicle, ka: usize, b: &mut Vehicle, material
 
 /// Whether two movers can touch this frame at all (their roots' spheres, grown by the speeds:
 /// a superset of every part pair's test).
-pub(crate) fn may_touch(a: &Vehicle, b: &Vehicle, dt: f32) -> bool {
+pub(crate) fn may_touch(a: &Body, b: &Body, dt: f32) -> bool {
     let (pa, pb) = (a.craft.body.pos, b.craft.body.pos);
     let d = [pa[0] - pb[0], pa[1] - pb[1], pa[2] - pb[2]];
     let reach = a.radius + b.radius + (len2(a.craft.body.vel) + len2(b.craft.body.vel)) * dt * REACH_SPEED;
@@ -506,16 +610,16 @@ pub fn check_all(vs: &mut [Vehicle], env: &Surroundings, dt: f32) {
         for k in order {
             {
                 let v = &mut vs[i];
-                contact::check_part_obstacles(&mut v.contacts, k, &v.craft.body, &near, v.radius, env.materials, dt);
+                contact::check_part_obstacles(&mut v.body.contacts, k, &v.body.craft.body, &near, v.body.radius, env.materials, dt);
             }
             for &j in &others {
                 let (a, b) = pair_mut(vs, i, j);
                 check_part_vs_mover(a, k, b, env.materials, dt);
             }
             let v = &mut vs[i];
-            contact::check_part_terrain(&mut v.contacts, k, &mut v.craft.body, env.ground, env.materials);
+            contact::check_part_terrain(&mut v.body.contacts, k, &mut v.body.craft.body, env.ground, env.materials);
             if inline {
-                let fb = contact::solve_part(&mut v.contacts[k], &mut v.craft.body, GRAVITY_Y, drive.as_ref());
+                let fb = contact::solve_part(&mut v.body.contacts[k], &mut v.body.craft.body, GRAVITY_Y, drive.as_ref());
                 v.feed_engine(fb.into_iter().collect());
             }
         }
@@ -526,7 +630,7 @@ pub fn check_all(vs: &mut [Vehicle], env: &Surroundings, dt: f32) {
 pub fn solve_all(vs: &mut [Vehicle], dt: f32) {
     for v in vs.iter_mut().filter(|v| v.in_world() && !v.physics_off) {
         if std::mem::take(&mut v.solved) {
-            contact::spring_pass(&mut v.contacts, &mut v.craft.body, GRAVITY_Y, dt);
+            contact::spring_pass(&mut v.body.contacts, &mut v.body.craft.body, GRAVITY_Y, dt);
         } else {
             v.solve(dt);
         }
@@ -624,7 +728,8 @@ mod tests {
             chain: Vec::new(),
             chain_anchor: Vec::new(),
         };
-        Vehicle { template: name.into(), craft: Craft::new(&model, body), contacts: vec![contact], radius, movement: None, id: 0, armor: None, removed: false, gone_since: None, born: 0, place_gen: 0, team: 0, entry: Default::default(), weapons: Vec::new(), shots: Vec::new(), solved: false, fixed: false, physics_off: false }
+        let body = Body { template: name.into(), craft: Craft::new(&model, body), contacts: vec![contact], radius, id: 0, solved: false, fixed: false, physics_off: false };
+        Vehicle { body, movement: None, armor: None, removed: false, gone_since: None, born: 0, place_gen: 0, team: 0, entry: Default::default(), weapons: Vec::new(), shots: Vec::new() }
     }
 
     /// `steps` frames of the movers in `vs`; the impulses they got.

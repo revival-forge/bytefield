@@ -18,7 +18,7 @@ fn main() {
         s.start_conquest();
         let mut seen = std::collections::BTreeMap::new();
         for (i, v) in s.vehicles.iter().enumerate() {
-            if v.movement.is_none() && !v.removed && !v.weapons.is_empty() {
+            if v.soldier().is_none() && !v.removed && !v.weapons.is_empty() {
                 seen.entry(v.template.clone()).or_insert(i);
             }
         }
@@ -51,7 +51,7 @@ fn main() {
             }
             let (f0, e0, h0) = (s.journal.fired.len(), s.journal.explosions.len(), s.journal.hit_log.len());
             let n0 = s.vehicles.len();
-            s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0), (bytefield_sim::soldier::axis::ALT_FIRE, 1.0)]);
+            s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0), (bytefield_sim::soldier::axis::ALT_FIRE, 1.0)]);
             // BYTEFIELD_FIRE_TRACK=<template>: where that projectile's first shot goes, every half second
             let track = std::env::var("BYTEFIELD_FIRE_TRACK").ok();
             let p0 = s.projectiles.len();
@@ -70,7 +70,7 @@ fn main() {
                 }
                 // flying a guided missile: back out of it, or its warhead goes off at once
                 if s.vehicles[soldier].entry.inside.is_some_and(|r| r >= n0) {
-                    s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[]);
+                    s.vehicles[soldier].soldier_mut().unwrap().set_input(&[]);
                 }
             }
             let fired = &s.journal.fired[f0..];

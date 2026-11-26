@@ -11,6 +11,7 @@ import bevy_pbr::render::{
     mesh_view_bindings::view,
 };
 import bevy_render::maths::PI;
+import bytefield::shaders::clouds::cloud_at;
 @if(VIEW_TRANSMISSION_TEXTURE)
 import bevy_pbr::render::mesh_view_bindings::{view_transmission_texture, view_transmission_sampler};
 
@@ -20,6 +21,8 @@ struct Billboard {
 };
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> bb: Billboard;
+// as the trees' meshes (`tree.wesl`): xyz what they keep of their light in a shadow, w the clouds' strength
+@group(constants::MATERIAL_BIND_GROUP) @binding(101) var<uniform> shade: vec4<f32>;
 
 @vertex
 fn vertex(vertex_in: Vertex) -> VertexOutput {
@@ -96,8 +99,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (color.a <= 0.0) {
         discard;
     }
+    // (a cloud takes the sun as on the tree's mesh: no shadows here, the billboard is not on the tree's surface)
+    let lit = vec4(color.rgb * pow(mix(shade.xyz, vec3(1.0), 1.0 - shade.w * cloud_at(in.world_position.xyz)), vec3(2.2)), color.a);
     var out: FragmentOutput;
-    out.color = main_pass_post_lighting_processing(pbr_input, color);
+    // (the air's haze and glow come with Bevy's fog: `aerial.wesl`)
+    out.color = main_pass_post_lighting_processing(pbr_input, lit);
     if (bb.params.w > 0.5) {
         out.color.a = gamma_alpha(out.color, in.position);
     }

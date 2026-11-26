@@ -1,5 +1,5 @@
 //! A still person among bots: a person with no input spawns and stays where it is put, life after life, and it is measured how long the bots take to shoot at it, hit it and kill it, and who:
-//!   idle_person <game> <mod> <level> <players> <seconds> [--mind bots2|bots3[:profile]] [--seed N] [--team 1|2] [--at x,y,z] [--out x.json]
+//!   idle_person <game> <mod> <level> <players> <seconds> [--mind bots[:variant]] [--seed N] [--team 1|2] [--at x,y,z] [--out x.json]
 //! Without `--at`, each life puts it beside the takeable flag nearest the centre of the flags (where the fighting is). The given mind
 //! plays on both sides. Prints one line per life (seconds since it spawns until the first enemy shot heading its way,
 //! within 2 m of its chest, until the first hit and until death, and who kills it) and a summary (medians; a life that does not end
@@ -9,9 +9,7 @@ use std::path::Path;
 
 fn mind_of(name: &str, level: &str, seed: u64) -> MindMaker {
     match name {
-        "bots2" => bytefield_sim::bots2::maker(level, seed),
-        "bots3" => bytefield_sim::bots3::maker(level, seed),
-        v if v.starts_with("bots3:") => bytefield_sim::bots3::maker_variant(level, seed, &v["bots3:".len()..].split('+').collect::<Vec<_>>()),
+        n if bytefield_sim::bots::is_name(n) => bytefield_sim::bots::mind(n, level, seed),
         other => panic!("no mind called {other}"),
     }
 }
@@ -36,7 +34,7 @@ fn median(mut v: Vec<f64>) -> Option<f64> {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 6 {
-        eprintln!("idle_person <game> <mod> <level> <players> <seconds> [--mind bots2|bots3[:profile]] [--seed N] [--team 1|2] [--at x,y,z] [--out x.json]");
+        eprintln!("idle_person <game> <mod> <level> <players> <seconds> [--mind bots[:variant]] [--seed N] [--team 1|2] [--at x,y,z] [--out x.json]");
         std::process::exit(2);
     }
     let opt = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).map(|s| s.as_str());
@@ -50,7 +48,7 @@ fn main() {
     if seed != 0 {
         s.rng = bytefield_sim::players::Rng(s.rng.0 ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     }
-    let mind = opt("--mind").unwrap_or("bots2");
+    let mind = opt("--mind").unwrap_or("bots");
     s.set_minds(1, mind_of(mind, &a[3], seed));
     s.set_minds(2, mind_of(mind, &a[3], seed));
     for i in 0..players {

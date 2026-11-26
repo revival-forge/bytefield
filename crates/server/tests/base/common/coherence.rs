@@ -268,7 +268,7 @@ pub fn run(world: &'static World, c: &Config) -> Report {
                         r.deaths += 1;
                     } else if now % 150 == 149 && server.sim.vehicles[i].entry.inside.is_none() && rng.next() % 100 < 40 {
                         let s = &mut server.sim;
-                        let free: Vec<usize> = s.vehicles.iter().enumerate().filter(|(n, v)| *n != i && v.in_world() && v.movement.is_none() && !v.armor.as_ref().is_some_and(|a| a.destroyed) && v.entry.occupants.iter().any(|o| o.is_none())).map(|(n, _)| n).collect();
+                        let free: Vec<usize> = s.vehicles.iter().enumerate().filter(|(n, v)| *n != i && v.in_world() && v.soldier().is_none() && !v.armor.as_ref().is_some_and(|a| a.destroyed) && v.entry.occupants.iter().any(|o| o.is_none())).map(|(n, _)| n).collect();
                         if !free.is_empty() {
                             let v = free[(rng.next() % free.len() as u64) as usize];
                             let seat = s.vehicles[v].entry.occupants.iter().position(|o| o.is_none()).unwrap();

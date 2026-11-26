@@ -41,14 +41,15 @@ Then, on that base, what the 2002 engine could not do:
   checking keys, and Bytefield does the same. You still play with the files of your own copy of the game.
 - **Graphics profiles:** *Original* (the original look) and *Enhanced*, plus single settings and an *Experimental* page.
 
-## Known limitations (0.1)
+## Known limitations (0.2)
 
-This is the first public version. Expect differences from the original: each one is a bug, and reports help most.
+Expect differences from the original: each one is a bug, and reports help most.
 
 - **Multiplayer** has been tested with several clients on one machine; playing across machines is new.
 - **Galactic Conquest** loads and plays, but it has had far less play by people than Desert Combat.
-- **Bots** play every mode but not well yet: in some maps they get stuck or do not leave their base.
+- **Bots** play every mode and walk on a navigation mesh, but they still get stuck in some places and some do not fly well.
 - **Sound** is incomplete in places, and some mods' sounds may be missing or too quiet.
+- On integrated GPUs the *Enhanced* profile can be slow on large maps; *Original* is lighter.
 - There is no launcher yet: content is switched on in the menu or with `bytefield-content`.
 
 ## What you need

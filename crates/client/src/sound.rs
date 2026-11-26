@@ -223,11 +223,18 @@ pub struct Controls {
     pub default: Option<f32>,
     /// `Speed`: the vehicle's, m/s
     pub speed: Option<f32>,
+    /// `Extern #map<Engine::DiveAngle>`: how far the vehicle's nose points down, radians (negative climbing)
+    pub dive: Option<f32>,
+    /// `Acceleration`: the vehicle's, m/s² (the planes' hull creaks under a load)
+    pub accel: Option<f32>,
 }
 
 /// The effects of one destination (`Volume`, `Pitch`) multiplied; the sources we do not drive
-/// (`Extern`, `Altitude`, `Acceleration`, and `Default`/`Speed` on what has none) leave it alone,
-/// but a `Linear` on `Default` is read at 0 (`0.9 0`: a fixed pitch).
+/// (`Altitude`, an `Extern` of another map, and `Default`/`Speed`/`Acceleration` on what has none)
+/// leave it alone, but a `Linear` on `Default` is read at 0 (`0.9 0`: a fixed pitch).
+/// `Extern` reads the `#map` it names: DC's engines (`EngineMap.ssc`) drive their layers with
+/// the engine's `Rpm` map, the engine's rpm as `Default` is, and the dive warning (`Dive2.ssc`, `beep.wav`)
+/// with the engine's `DiveAngle`; left alone, every layer played at once and the warning all the flight.
 fn effect(s: &Sample, dest: &str, c: &Controls, with_time: bool) -> f32 {
     let mut v = 1.0;
     for e in s.effects.iter().filter(|e| e.destination.eq_ignore_ascii_case(dest)) {
@@ -246,6 +253,21 @@ fn effect(s: &Sample, dest: &str, c: &Controls, with_time: bool) -> f32 {
             "speed" => match c.speed {
                 Some(x) => x,
                 None => continue,
+            },
+            "acceleration" => match c.accel {
+                Some(x) => x,
+                None => continue,
+            },
+            "extern" => match e.map.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                Some("engine::rpm") => match c.default {
+                    Some(x) => x,
+                    None => continue,
+                },
+                Some("engine::diveangle") => match c.dive {
+                    Some(x) => x,
+                    None => continue,
+                },
+                _ => continue,
             },
             _ => continue,
         };
@@ -369,6 +391,10 @@ pub struct Sounds {
     seen_radio: usize,
     /// the vehicles humming
     hums: HashMap<usize, Hum>,
+    /// each landing gear (vehicle, part): whether it was up, and its moving sound's voices and start
+    gears: HashMap<(usize, usize), (bool, Vec<u64>, f32)>,
+    /// each vehicle heard: its velocity at a simulation time and its acceleration, eased
+    accel: HashMap<usize, (f32, Vec3, f32)>,
     /// a vehicle template's parts with a script: (template, kind)
     parts: HashMap<String, Arc<Vec<(String, String)>>>,
     steps: HashMap<usize, Steps>,
@@ -878,7 +904,7 @@ fn update(g: Res<Game>, mut sounds: ResMut<Sounds>, mut fx: ResMut<crate::effect
     // (cursors count from the round's start: the sim cuts its logs, `trim_logs`)
     for (_, i, shot, proj) in bytefield_sim::log_since(&sim.journal.fired, sim.journal.log_base.fired, &mut s.seen) {
         let v = &sim.vehicles[*i];
-        let name = match v.movement.as_ref() {
+        let name = match v.soldier() {
             Some(m) => m.weapon.as_ref().map(|w| w.template.name.clone()),
             None => {
                 let pn = proj.and_then(|k| sim.projectiles.get(k)).map(|q| q.template.name.clone());
@@ -917,7 +943,7 @@ fn update(g: Res<Game>, mut sounds: ResMut<Sounds>, mut fx: ResMut<crate::effect
     // reloads: the weapon's patch 1 when its reload starts
     let mut reloading = std::mem::take(&mut s.reloading);
     for (i, v) in sim.vehicles.iter().enumerate() {
-        let Some(w) = v.movement.as_ref().and_then(|m| m.weapon.as_ref()) else { continue };
+        let Some(w) = v.soldier().and_then(|m| m.weapon.as_ref()) else { continue };
         if w.reload > 0.0 && !reloading.contains(&i) {
             if let Some(p) = s.script(vfs, db, &w.template.name).and_then(|p| p.get(1).cloned()) {
                 let at = crate::assets::to_bevy(v.craft.body.pos);
@@ -926,7 +952,7 @@ fn update(g: Res<Game>, mut sounds: ResMut<Sounds>, mut fx: ResMut<crate::effect
         }
     }
     reloading.clear();
-    reloading.extend(sim.vehicles.iter().enumerate().filter(|(_, v)| v.movement.as_ref().and_then(|m| m.weapon.as_ref()).is_some_and(|w| w.reload > 0.0)).map(|(i, _)| i));
+    reloading.extend(sim.vehicles.iter().enumerate().filter(|(_, v)| v.soldier().and_then(|m| m.weapon.as_ref()).is_some_and(|w| w.reload > 0.0)).map(|(i, _)| i));
     s.reloading = reloading;
     // effects (explosions, hits, fires): their bundle's script, its first patch
     for (name, at, on, id) in std::mem::take(&mut fx.started) {
@@ -966,6 +992,7 @@ fn update(g: Res<Game>, mut sounds: ResMut<Sounds>, mut fx: ResMut<crate::effect
     }
     update_areas(s, &ear, now, &g.session.sim.world.vfs);
     hums(&g, s, &ear, now);
+    gears(&g, s, &ear, now);
     pings(&g, s, &ear, now, dt);
     steps(&g, s, &ear, now);
     radio(&g, s, &ear, now);
@@ -977,7 +1004,27 @@ fn update(g: Res<Game>, mut sounds: ResMut<Sounds>, mut fx: ResMut<crate::effect
         let Some(at) = anchor_pos(&g, &s.areas, &ear, p.anchor) else { continue };
         let at = at + Vec3::from(p.sample.relative_position);
         let (default, speed) = drive_values(&g, p.drive);
-        let c = Controls { distance: (at - ear.pos).length(), time: now - p.started, release: p.released.map(|r| now - r), default, speed };
+        // TODO: what the original's client gives the engine's `DiveAngle` (unknown); level 3: the
+        // nose's angle below the horizon in radians, as the submarine HUD's `DiveAngle` (an `asin`)
+        let dive = match p.anchor {
+            Anchor::Vehicle(i) => g.session.sim.vehicles.get(i).map(|v| (-v.craft.body.rows[2][1]).clamp(-1.0, 1.0).asin()),
+            _ => None,
+        };
+        // TODO: what the original's `Acceleration` is (with gravity, as an accelerometer?); level 3: the
+        // change of the velocity between ticks, eased
+        let accel = match p.anchor {
+            Anchor::Vehicle(i) => g.session.sim.vehicles.get(i).map(|v| {
+                let vel = Vec3::from(v.craft.body.vel);
+                let e = s.accel.entry(i).or_insert((now, vel, 0.0));
+                if now > e.0 + 1e-4 {
+                    let a = (vel - e.1).length() / (now - e.0);
+                    *e = (now, vel, e.2 + (a - e.2) * 0.3);
+                }
+                e.2
+            }),
+            _ => None,
+        };
+        let c = Controls { distance: (at - ear.pos).length(), time: now - p.started, release: p.released.map(|r| now - r), default, speed, dive, accel };
         let mut pitch = p.pitch * effect(&p.sample, "Pitch", &c, true);
         if p.sample.doppler {
             let src = match p.anchor {
@@ -987,6 +1034,15 @@ fn update(g: Res<Game>, mut sounds: ResMut<Sounds>, mut fx: ResMut<crate::effect
             pitch *= doppler(at, ear.pos, src, s.ear_vel);
         }
         heard.push((p.voice, gains(&p.sample, at, &ear, &c, true), pitch, p.sample.priority));
+    }
+    // `BYTEFIELD_SOUND_LOUD=1`: every 2 s the loudest voices (what a hum or a beep in a recording is)
+    static LOUD_AT: std::sync::Mutex<f64> = std::sync::Mutex::new(0.0);
+    let wall = std::time::SystemTime::UNIX_EPOCH.elapsed().map_or(0.0, |d| d.as_secs_f64());
+    if std::env::var_os("BYTEFIELD_SOUND_LOUD").is_some() && LOUD_AT.lock().is_ok_and(|mut t| wall - *t >= 2.0 && { *t = wall; true }) {
+        let mut loud: Vec<_> = heard.iter().filter_map(|h| s.playing.iter().find(|p| p.voice == h.0).map(|p| (h.1[0].max(h.1[1]), h.2, p))).collect();
+        loud.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let list: Vec<String> = loud.iter().take(8).map(|(g, pitch, p)| format!("{} {g:.2} x{pitch:.2}", p.sample.path.rsplit('/').next().unwrap_or(""))).collect();
+        info!("sound loud: {}", list.join(" | "));
     }
     limit_voices(&mut heard, VOICES);
     for (voice, gain, pitch, _) in heard {
@@ -1026,6 +1082,48 @@ fn limit_voices(heard: &mut [(u64, [f32; 2], f32, i32)], n: usize) {
     }
 }
 
+/// How long a landing gear's moving sound plays before it is released.
+// TODO: the original's (the gear's travel, its `RotationalBundle` reaching its stop?); level 3: a guess
+const GEAR_SOUND: f32 = 2.0;
+
+/// The landing gears (`LandingGear.ssc`): when one goes down its first patch (gear out), when it goes up
+/// the second (gear in), released after [`GEAR_SOUND`]. Played as a hum they ran the whole flight, three
+/// at once, their pitch ramp past its end (DC's `lcvphirpm.wav`: a beeping).
+fn gears(g: &Game, s: &mut Sounds, ear: &Ear, now: f32) {
+    let sim = &g.session.sim;
+    let (vfs, db) = (&sim.world.vfs, &sim.world.db);
+    for (i, v) in sim.vehicles.iter().enumerate() {
+        for (k, part) in v.craft.parts.iter().enumerate() {
+            let bytefield_sim::craft::Kind::LandingGear(gear) = &part.kind else { continue };
+            let Some(&(was_up, _, _)) = s.gears.get(&(i, k)) else {
+                s.gears.insert((i, k), (gear.up, Vec::new(), now));
+                continue;
+            };
+            if v.removed || was_up == gear.up {
+                continue;
+            }
+            let at = crate::assets::to_bevy(v.craft.body.pos);
+            let patch = s.script(vfs, db, &part.name).and_then(|p| p.get(if gear.up { 1 } else { 0 }).cloned());
+            let idx = patch.map_or_else(Vec::new, |p| s.start_with(vfs, &p, Anchor::Vehicle(i), at, ear, now, Start { drive: Drive::Speed(i), lang: None, release: false }));
+            let voices = idx.iter().map(|&n| s.playing[n].voice).collect();
+            s.gears.insert((i, k), (gear.up, voices, now));
+        }
+    }
+    // released (their `TimeRelease` fades), then stopped as a hum is
+    let Sounds { gears, playing, mixer, .. } = s;
+    for (_, voices, t) in gears.values_mut().filter(|(_, v, t)| !v.is_empty() && now - *t > GEAR_SOUND) {
+        for p in playing.iter_mut().filter(|p| voices.contains(&p.voice)) {
+            p.released.get_or_insert(now);
+        }
+        if now - *t > GEAR_SOUND + HUM_RELEASE {
+            let mut m = mixer.lock().unwrap();
+            for v in voices.drain(..) {
+                m.stop(v, true);
+            }
+        }
+    }
+}
+
 /// How long a released hum keeps playing: its `TimeRelease` fades last 0.4 s.
 const HUM_RELEASE: f32 = 1.0;
 
@@ -1036,7 +1134,7 @@ fn hums(g: &Game, s: &mut Sounds, ear: &Ear, now: f32) {
     let sim = &g.session.sim;
     let (vfs, db) = (&sim.world.vfs, &sim.world.db);
     for (i, v) in sim.vehicles.iter().enumerate() {
-        if v.movement.is_some() {
+        if v.soldier().is_some() {
             continue;
         }
         let on = !v.removed && v.craft.parts.iter().any(|p| matches!(&p.kind, bytefield_sim::craft::Kind::Engine(e) if e.on));
@@ -1055,7 +1153,8 @@ fn hums(g: &Game, s: &mut Sounds, ear: &Ear, now: f32) {
             .clone();
         let at = crate::assets::to_bevy(v.craft.body.pos);
         let mut voices = Vec::new();
-        for (name, kind) in parts.iter() {
+        // (a landing gear sounds while it moves, `gears`, not while the engine runs)
+        for (name, kind) in parts.iter().filter(|(_, k)| k != "landinggear") {
             let Some(p) = s.script(vfs, db, name).and_then(|p| p.first().cloned()) else { continue };
             let part = v.craft.parts.iter().position(|q| q.name.eq_ignore_ascii_case(name));
             let drive = match (kind.as_str(), part) {
@@ -1157,7 +1256,7 @@ fn steps(g: &Game, s: &mut Sounds, ear: &Ear, now: f32) {
     let (vfs, db) = (&sim.world.vfs, &sim.world.db);
     let lang = |t: &str| db.object_template(t).and_then(|t| t.get("radioLanguage")?.first().map(|l| l.trim_matches('"').to_string()));
     for (i, v) in sim.vehicles.iter().enumerate() {
-        let Some(m) = v.movement.as_ref() else { continue };
+        let Some(m) = v.soldier() else { continue };
         if !v.in_world() {
             s.steps.remove(&i);
             continue;
@@ -1210,7 +1309,7 @@ fn steps(g: &Game, s: &mut Sounds, ear: &Ear, now: f32) {
     }
     for e in bytefield_sim::log_since(&sim.journal.damage_log, sim.journal.log_base.damage, &mut s.seen_damage) {
         let Some(v) = sim.vehicles.get(e.vehicle) else { continue };
-        if v.movement.is_none() || e.amount <= 0.0 {
+        if v.soldier().is_none() || e.amount <= 0.0 {
             continue;
         }
         let killed = e.hp <= 0.0 && e.hp + e.amount > 0.0;
@@ -1313,6 +1412,18 @@ mod tests {
         assert!((near[1] - 1.0).abs() < 1e-3, "full within minDistance");
         assert!((g(4.0)[1] - 0.5).abs() < 1e-3, "2/4");
         assert_eq!(g(-60.0), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_dive_warning_sounds_only_diving() {
+        // DC's `Dive2.ssc`: by the dive angle (an `Extern` map), silent level, full past 0.7
+        let text = "newPatch\nload @ROOT/Sound/@RTD/beep.wav\nloop\nminDistance 5\nbeginEffect\ncontrolDestination Volume\n\
+            controlSource Extern #map<Engine::DiveAngle> \nenvelope Ramp\nparam 0.2\nparam 0.7\nparam 0\nparam 1\nendEffect\n";
+        let s = bytefield_formats::ssc::parse(text, &mut |_| None).patches[0].samples[0].clone();
+        let ear = Ear { pos: Vec3::ZERO, right: Vec3::X };
+        let g = |dive: f32| gains(&s, Vec3::ZERO, &ear, &Controls { dive: Some(dive), ..Default::default() }, true)[0];
+        assert_eq!(g(0.0), 0.0, "level: silent");
+        assert!(g(1.0) > 0.7, "diving: heard");
     }
 
     #[test]

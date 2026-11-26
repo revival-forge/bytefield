@@ -68,8 +68,17 @@ pub(super) fn foot_views(sim: &bytefield_sim::Sim, soldier: &str) -> [bool; 3] {
 // TODO: the fly-by's frames are not done:
 // when the original moves its point is a guess. The `CVM*` flags of each `Camera` template (all on in the data but
 // the traces, used by DC's guided bombs) are not read: neither are the trace views.
+// TODO: standing still, the BM21's and the Patriot's fly-by match the original's to the pixel (El_Alamein's B-17 site, heading 90),
+// but not DC's SA-3's, with the server's own radius (14.48): ours stands some 56 m ahead, just short of the barbed wire on the ridge
+// (stebarbwire_m1, x 1619 to 1627), the original's past it, looking back through the wire. Its seat camera or the point measured from
+// the vehicle's origin? Turned, at heading 0 (nothing between it and the point) ours matches the original's; at 180 (a hangar between)
+// ours stands nearer, as at 90: the original's point goes farther only when something stands in the way. What may differ
+// from ours is the height under the point (the terrain alone, or objects and water too) and the point being one of the
+// vehicle's recorded frames.
 // TODO: on foot (GC's soldier) chase and front match the original's, but lying the front view comes nearer (his body some 1.4 times as
 // wide as the original's, GC_Hoth): whether the original looks at another point than the eyes, or keeps its reach.
+// TODO: GC's Lancer, seat 3 (a turret under the hull): F10 puts ours inside the hull, the original's out behind the turret (same
+// radius rule; GC_Vanguard). Likely the same question as the mortar's below.
 // TODO: the mortar's F10/F11 come nearer than the original's with the same radius (2.354, the server's): the reach or the centre of a
 // `c_SeatIsOutside` seat?
 pub(super) fn update_chase(g: &mut Game) {
@@ -136,5 +145,5 @@ pub(super) fn on_foot_view(g: &Game, look: Vec2) -> Option<([[f32; 3]; 3], [f32;
     if s.entry.inside.is_some() {
         return None;
     }
-    Some(s.movement.as_ref()?.view(&s.craft.body, [look.x, look.y]))
+    Some(s.soldier()?.view(&s.craft.body, [look.x, look.y]))
 }

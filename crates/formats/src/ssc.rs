@@ -122,16 +122,13 @@ pub struct Effect {
 impl Effect {
     /// The ramp of the first four params: `x0 x1 y0 dy`, flat outside `[x0, x1]`
     /// (`30 50 1 -1`: full volume up to 30 m, silent from 50 m; `1.18 1.18 0 1`: silent for
-    /// 1.18 s, then full). With six (the engines' pitch, `0 1.1 0.85 0.15 2 1.9`) we read the last
-    /// two as a further point `(x2, y2)` the line goes on to, when `x2 > x1` (a guess: the rpm
-    /// seldom passes 1.1, so it hardly matters).
+    /// 1.18 s, then full). A fifth and sixth param (the engines' pitch, `0 1.1 0.85 0.15 2 1.9`; the landing
+    /// gear's, `0 1 .7 .75 3 4`) are left out: flat past `x1`.
+    // TODO: what the fifth and sixth are. Read as a further point the line goes on to, the gear's pitch
+    // reached ×4 three seconds in (DC's planes beeped the whole flight); the engines hardly pass x1.
     pub fn ramp(&self, x: f32) -> f32 {
         let p = |i: usize| self.params.get(i).copied().unwrap_or(0.0);
         let (x0, x1, y0, dy) = (p(0), p(1), p(2), p(3));
-        if self.params.len() >= 6 && p(4) > x1 && x > x1 && x1 >= x0 {
-            let t = ((x - x1) / (p(4) - x1)).min(1.0);
-            return y0 + dy + (p(5) - y0 - dy) * t;
-        }
         let t = if x1 > x0 {
             ((x - x0) / (x1 - x0)).clamp(0.0, 1.0)
         } else if x < x0 {
@@ -371,6 +368,9 @@ mod tests {
         assert!((e.value(10.0) - 0.6).abs() < 1e-6);
         let e = Effect { envelope: "Ramp".into(), params: vec![0.0, 1.1, 0.85, 0.15, 2.0, 1.9], ..Default::default() };
         assert!((e.value(1.1) - 1.0).abs() < 1e-6);
-        assert!((e.value(2.0) - 1.9).abs() < 1e-6);
+        assert!((e.value(2.0) - 1.0).abs() < 1e-6, "flat past x1: the fifth and sixth are not a further point");
+        // the landing gear's pitch: 0.7 to 1.45 over its first second, then held (not on to ×4)
+        let e = Effect { envelope: "Ramp".into(), params: vec![0.0, 1.0, 0.7, 0.75, 3.0, 4.0], ..Default::default() };
+        assert!((e.value(10.0) - 1.45).abs() < 1e-6);
     }
 }

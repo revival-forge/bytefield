@@ -37,7 +37,7 @@ pub fn fuse(p: &Projectile, vehicles: &[Vehicle], under_water: bool) -> bool {
         return false;
     }
     let mass = p.rigid.as_ref().map_or(t.mass, |v| v.craft.body.mass);
-    vehicles.iter().filter(|v| v.in_world() && v.movement.is_none()).any(|v| {
+    vehicles.iter().filter(|v| v.in_world() && v.soldier().is_none()).any(|v| {
         let b = &v.craft.body;
         let r = [b.pos[0] - p.pos[0], b.pos[1] - p.pos[1], b.pos[2] - p.pos[2]];
         if r[0] * r[0] + r[1] * r[1] + r[2] * r[2] > d * d {
@@ -109,7 +109,7 @@ impl crate::Sim<'_> {
 
     /// The soldiers that fired with the detonator this frame set off their charges.
     pub(crate) fn use_detonators(&mut self) {
-        let firing: Vec<usize> = self.vehicles.iter().enumerate().filter(|(_, v)| v.movement.as_ref().is_some_and(|m| m.detonate)).map(|(i, _)| i).collect();
+        let firing: Vec<usize> = self.vehicles.iter().enumerate().filter(|(_, v)| v.soldier().is_some_and(|m| m.detonate)).map(|(i, _)| i).collect();
         for i in firing {
             self.detonate_charges(i);
         }
@@ -219,7 +219,7 @@ mod tests {
         let press = |s: &mut crate::Sim, a: usize, frames: usize| {
             for f in 0..frames {
                 let v = if f < 2 { 1.0 } else { 0.0 };
-                s.vehicles[sol].movement.as_mut().unwrap().set_input(&[(a, v)]);
+                s.vehicles[sol].soldier_mut().unwrap().set_input(&[(a, v)]);
                 s.step();
             }
         };
@@ -229,7 +229,7 @@ mod tests {
         let charges: Vec<usize> = s.pools.iter().filter(|p| p.weapon == "ExpPack").flat_map(|p| p.slots.clone()).collect();
         assert_eq!(charges.len(), 4, "{:?}", s.pools);
         assert!(charges.iter().all(|&k| s.projectiles[k].alive()));
-        let held = s.vehicles[sol].movement.as_ref().unwrap().weapon.as_ref().map(|w| w.template.name.clone());
+        let held = s.vehicles[sol].soldier().unwrap().weapon.as_ref().map(|w| w.template.name.clone());
         assert_eq!(held.as_deref(), Some("Detonator"));
         let booms = s.journal.explosions.len();
         press(&mut s, axis::FIRE, 10);

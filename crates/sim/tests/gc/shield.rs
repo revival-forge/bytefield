@@ -74,7 +74,7 @@ fn a_soldier_goes_through_the_shield_slowed_down() {
     let (mut z, mut yz) = (Vec::new(), Vec::new());
     for f in 0..240 {
         let axes: &[(usize, f32)] = if f >= 40 { &[(bytefield_sim::soldier::axis::THROTTLE, 1.0)] } else { &[] };
-        s.vehicles[sol].movement.as_mut().unwrap().set_input(axes);
+        s.vehicles[sol].soldier_mut().unwrap().set_input(axes);
         s.step();
         let p = s.vehicles[sol].craft.body.pos;
         z.push(p[2]);

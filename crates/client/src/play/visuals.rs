@@ -86,7 +86,11 @@ pub(super) fn shade_objects(commands: &mut Commands, g: &Game, shown: &Shown, in
         let k = was.map_or(now, |w| s.fade(w, now, TICK as f32));
         shade.intensity.insert(i, k);
         let tag = level::shade_tag(s.mesh_factor(k)).value;
-        let skin_tag = level::shade_tag(s.skin_factor(k)).value;
+        // A soldier in a seat takes a static mesh's factor, not a skin's: the original draws the one on the Type 38's deck, in El Alamein's
+        // sun (ShadowAmbient 50), with TF 0xffffffff where one on foot takes 0xbe, and the same `c7`. Level 2: in shade, not seen.
+        let seated = v.entry.inside.is_some();
+        let skin_tag = if seated { tag } else { level::shade_tag(s.skin_factor(k)).value };
+
         // (a skinned one above ShadowSamplingCullY takes no factor: [`ShadowSampler::samples`])
         let sampled = s.samples(&world.level, at);
         // (the skinned ones, a soldier's arms in his own eyes too, take less: `skin_factor`; the hand weapon in
@@ -127,7 +131,7 @@ pub(super) fn kit_parts(commands: &mut Commands, g: &Game, shown: &Shown, in_han
     let world = sim.world;
     for (i, v) in sim.vehicles.iter().enumerate() {
         let pose = shown.4.get(&i);
-        let kit = pose.and_then(|_| v.movement.as_ref()?.kit).and_then(|k| sim.items.get(k)).map(|it| it.template.clone());
+        let kit = pose.and_then(|_| v.soldier()?.kit).and_then(|k| sim.items.get(k)).map(|it| it.template.clone());
         if let Some((had, es)) = in_hand.1.get(&i)
             && Some(had) != kit.as_ref()
         {
@@ -228,7 +232,7 @@ pub(super) fn interpolate(
         let pos = sf.prev.iter().zip(&sf.cur).map(|(p, c)| std::array::from_fn(|k| p[k] + (c[k] - p[k]) * a)).collect();
         if let Some(mesh) = meshes.get_mut_untracked(&sf.mesh) {
             if rest {
-                skin::write_arms(&sf.skin, pos, at.rotation(), if sf.arms { body } else { None }, mesh);
+                skin::write_arms(&sf.skin, pos, at.rotation(), if sf.arms { body } else { None }, sf.seated, mesh);
             } else {
                 skin::write(&sf.skin, pos, mesh);
             }

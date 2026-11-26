@@ -66,6 +66,31 @@ impl Tile {
         }
         false
     }
+
+    /// How many of each row's bits are in shadow over `side` equal spans of its columns, for every row: the share
+    /// (0–1) for each, `side` × `height` rows, row after row. A column is the run's whose running sum first reaches it, as
+    /// in [`Self::bit`].
+    pub fn shadow_shares(&self, side: usize) -> Vec<f32> {
+        let w = self.width as usize;
+        let mut out = vec![0.0; side * self.height as usize];
+        let per = side as f32 / w as f32;
+        for row in 0..self.height as usize {
+            let runs = &self.runs[self.rows[row] as usize..self.rows[row + 1] as usize];
+            let line = &mut out[row * side..(row + 1) * side];
+            let (mut col, mut sum) = (0usize, 0usize);
+            for (k, r) in runs.iter().enumerate() {
+                sum += (r & 0x1fff) as usize;
+                let end = if k + 1 == runs.len() { w } else { (sum + 1).min(w) };
+                if r >> 13 & 1 == 1 {
+                    for c in col..end {
+                        line[c * side / w] += per;
+                    }
+                }
+                col = col.max(end);
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -89,5 +114,7 @@ mod tests {
         assert!(!t.bit(3.0 / 8.0, 0.0));
         assert!(t.bit(4.0 / 8.0, 0.0));
         assert!(t.bit(0.0, 0.5));
+        // in two spans: the first run's four columns lit, the rest in shadow
+        assert_eq!(t.shadow_shares(2), vec![0.0, 1.0, 1.0, 1.0]);
     }
 }

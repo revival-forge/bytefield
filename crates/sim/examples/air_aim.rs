@@ -1,7 +1,7 @@
 //! Where do the shots fired from the air go? Every projectile fired from a plane's or helicopter's seat is followed to its end;
 //! the closest it passes to an enemy (a soldier on foot, or the vehicle an enemy is in, less that vehicle's radius) and whether it
 //! hit one. The minds play a normal round; nothing in them is looked at.
-//!   air_aim <game> <mod> <level> [seconds=300] [--mind bots3|bots2|bots3:<variant>] [--players 32] [--seed 1] [--seat 0|all]
+//!   air_aim <game> <mod> <level> [seconds=300] [--mind bots|bots:<variant>] [--players 32] [--seed 1] [--seat 0|all]
 //! Output: pilot-seconds per class (seated, in the air, with an enemy within 420 m); damage given by kind of target and source (a hit,
 //! an explosion); one block per (class, seat, projectile template, so bombs and rockets apart from bullets): shots, hits on an enemy, and how many passed within 2, 5, 10, 20, 50 m (and, apart, how many passed that close to the centre of an enemy aircraft in flight, with nothing taken off for its size), with the median
 //! distance to that enemy when fired; and the shooters.
@@ -10,9 +10,7 @@ use std::collections::BTreeMap;
 
 fn mind_of(name: &str, level: &str, seed: u64) -> MindMaker {
     match name {
-        "bots2" => bytefield_sim::bots2::maker(level, seed),
-        "bots3" => bytefield_sim::bots3::maker(level, seed),
-        v if v.starts_with("bots3:") => bytefield_sim::bots3::maker_variant(level, seed, &v["bots3:".len()..].split('+').collect::<Vec<_>>()),
+        n if bytefield_sim::bots::is_name(n) => bytefield_sim::bots::mind(n, level, seed),
         other => panic!("no mind called {other}"),
     }
 }
@@ -57,12 +55,12 @@ struct Block {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() < 4 {
-        eprintln!("air_aim <game> <mod> <level> [seconds=300] [--mind bots3|bots2] [--players 32] [--seed 1] [--seat 0|all]");
+        eprintln!("air_aim <game> <mod> <level> [seconds=300] [--mind bots] [--players 32] [--seed 1] [--seat 0|all]");
         std::process::exit(2);
     }
     let opt = |k: &str| a.iter().position(|x| x == k).and_then(|i| a.get(i + 1)).cloned();
     let seconds: f32 = a.get(4).filter(|x| !x.starts_with("--")).map_or(300.0, |x| x.parse().unwrap());
-    let mind = opt("--mind").unwrap_or("bots3".into());
+    let mind = opt("--mind").unwrap_or("bots".into());
     let players: usize = opt("--players").map_or(32, |x| x.parse().unwrap());
     let seed: u64 = opt("--seed").map_or(1, |x| x.parse().unwrap());
     let all_seats = opt("--seat").is_some_and(|x| x == "all");
@@ -168,7 +166,7 @@ fn main() {
             // whose: the team of a player in the attacker, and of the soldier hit or of a player in the vehicle hit (0: empty)
             let team_in = |c: usize| s.players.iter().find(|p| p.soldier.and_then(|i| s.vehicles.get(i)).is_some_and(|v| v.entry.inside == Some(c) || v.id == c)).map_or(0, |p| p.team);
             let (ta, tv) = (team_in(by.id), team_in(e.vehicle));
-            let soldier = s.vehicles.get(e.vehicle).is_some_and(|v| v.movement.is_some());
+            let soldier = s.vehicles.get(e.vehicle).is_some_and(|v| v.soldier().is_some());
             let kind = match (soldier, tv) {
                 (_, 0) => "empty vehicle",
                 (true, t) if t == ta => "own soldier (a crash?)",

@@ -30,7 +30,7 @@ scripts/bytefield-content mods-dir add data/hd/custom/Mods   # mods kept elsewhe
 scripts/bytefield-content pack add "data/hd/base/Graphics Mod"   # a pack (then skybox, xpack: the last ones on top)
 scripts/bytefield-content pack off hd-skybox            # on, off, rm, up, down
 scripts/bytefield-content graphics enhanced             # or original
-scripts/bytefield-content set bloom 0.15               # single settings over the profile, the same as the VIDEO/EFFECTS menu: aniso, max_texture, mip_bias, shadows 1/0, shadow_quality low|medium|high, aa off|msaa|fxaa|smaa, sharpen 0–1, reflections 1/0, coverage 1/0, bloom 0–1, look neutral|vivid|warm, vignette 0–1, view_distance 0.5–4 ("-" removes it)
+scripts/bytefield-content set bloom 0.15               # single settings over the profile, the same as the VIDEO/EFFECTS menu: aniso, max_texture, mip_bias, shadows 1/0, shadow_quality low|medium|high, aa off|msaa|fxaa|smaa, sharpen 0–1, reflections 1/0, coverage 1/0, bloom 0–1, look neutral|vivid|warm, vignette 0–1, view_distance 0.5–4, grass 0–1, clouds 0–1, decals 1/0, heat 1/0, relief 0–1, aerial 0–1 ("-" removes it)
 scripts/bytefield-content missing                       # what we know of and you do not have, with where to get it
 scripts/bytefield-content verify                        # the install's files against the versions we know
 ```
@@ -38,7 +38,7 @@ scripts/bytefield-content verify                        # the install's files ag
 In the menu:
 - **MULTIPLAYER → CREATE GAME** (level, side, bots) and START.
 - **MULTIPLAYER → JOIN** (`ip[:port]`).
-- **OPTIONS → GENERAL**: volume, language and HD PACKS (if there are any).
+- **OPTIONS → GENERAL**: volume, language, ADD FOLDER (type a pack's or a mod's folder and press Enter, or drop the folder on the window: it is added as `bytefield-content add` does) and a row per pack (HD PACKS when there are many).
 - **OPTIONS → CONTROLS**: keys, mouse sensitivity and inversion per map (common, infantry, air, land and sea) and keyboard sensitivity in vehicles. Changes are written on SAVE, to `controls.cfg`, next to `settings.cfg`. Without that file, the first start reads the Custom profile of your install of the original, if there is one.
 - **OPTIONS → VIDEO**: the graphics quality (Original/Enhanced; "Custom" once something is touched) and each single setting:
   antialiasing, sharpening, anisotropic filtering, textures, shadows, reflections, soft foliage. **EFFECTS**: bloom, colour, vignette,
@@ -49,6 +49,7 @@ In a round:
 - **M**: the big map; **N**: the minimap zoom (three steps, like the original).
 - **Ctrl+F12**: shows or hides the debug overlay (FPS, tick, position, vehicle, speed, engine).
 - **Ctrl+F11**: leaves a mark: a ticket in `data/out/tickets/<date>-markN/` with a screenshot, the state and the commit, a `MARK n` line in the log, and a line to type a note (Enter saves, Esc without a note). To report something odd: "mark 3".
+- **Ctrl+F9**: shows or hides the navigation mesh drawn over the world (translucent faces a hand above each walkable polygon, green near the ground and warmer the higher; grey for islands nobody reaches; blue lines for drops, cyan for ladders). The first time it builds or reads the mesh in the background. `BYTEFIELD_NAVMESH_VIEW=1` starts with it on.
 - Each game's log stays in `data/out/logs/` (`latest.log`, the last one), with a `state:` line every 5 s.
 - **Tab**: the scoreboard.
 - **P**: pause, in your own game (not on a server). **Print Screen**: a screenshot in `data/out/shots/` (or the user data folder).
@@ -66,7 +67,7 @@ The options are saved in `~/.config/bytefield/settings.cfg`. Another path with `
 ## 2. Skipping the menu: straight into a level
 
 ```
-scripts/bytefield data/game bf1942 El_Alamein                       # conquest with bots (bots3 by default; `--bot-ai bots2` the older ones)
+scripts/bytefield data/game bf1942 El_Alamein                       # conquest with bots (bots by default)
 scripts/bytefield data/game bf1942 El_Alamein --team 2 --bots 16
 scripts/bytefield data/game bf1942 El_Alamein --team 0 --bots 15         # `--team 0`: whichever side comes up (like the original, by count); the bots are split the same way
 scripts/bytefield data/game bf1942 Berlin --mode coop
@@ -85,7 +86,7 @@ scripts/bytefield data/game --menu create,start    # and starts with the last ch
 ```
 scripts/bytefield data/game bf1942 El_Alamein --host [--port 14567] [--bots 8]   # play and serve at once
 scripts/bytefield data/game --connect 192.168.1.10[:14567] [--team 2]             # join (also from the menu)
-target/release/bytefield-server data/game bf1942 El_Alamein --port 14567 --bots 8 [--seconds 600] [--start-delay 20] [--min-players 2] [--friendly-fire 100] [--kickback 0] [--no-nose-cam] [--welcome "line"]... [--snapshots-per-second 30] [--packet-bytes 1200] [--bot-ai bots3|bots2]   # dedicated server (bots3 by default): the last two are only for modest uplinks (15 or 10 per second; 300 to 1400 B per packet); each round starts with a 20 s wait; with no bots and in conquest, the map restarts when the second person arrives; `--friendly-fire` is CREATE GAME's FRIENDLY FIRE (in %, soldiers and vehicles), `--kickback` the share that comes back to whoever damages a teammate (in %, 0 by default, like the original), each `--welcome` a COMMENTS line in the briefing (`game.setServerWelcomeMessage`; five are shown); they also work for the client
+target/release/bytefield-server data/game bf1942 El_Alamein --port 14567 --bots 8 [--seconds 600] [--start-delay 20] [--min-players 2] [--friendly-fire 100] [--kickback 0] [--no-nose-cam] [--welcome "line"]... [--snapshots-per-second 30] [--packet-bytes 1200] [--bot-ai bots]   # dedicated server (bots by default): the last two are only for modest uplinks (15 or 10 per second; 300 to 1400 B per packet); each round starts with a 20 s wait; with no bots and in conquest, the map restarts when the second person arrives; `--friendly-fire` is CREATE GAME's FRIENDLY FIRE (in %, soldiers and vehicles), `--kickback` the share that comes back to whoever damages a teammate (in %, 0 by default, like the original), each `--welcome` a COMMENTS line in the briefing (`game.setServerWelcomeMessage`; five are shown); they also work for the client
 cargo test --release -p bytefield-server -- --nocapture                           # server + 2 in-memory clients with loss
 ```
 

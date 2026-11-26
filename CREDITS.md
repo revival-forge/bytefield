@@ -35,6 +35,20 @@ Rights holders: **revival-forge@proton.me**; we answer within days.
 ## Inspiration
 OpenMW (a free engine that reads the original data) and its `dummy-content` by Mudcrab (synthetic test data).
 
+Bot techniques, ideas only (no code or text taken; described in our own words in the code):
+- *Game AI Pro* (ed. Steve Rabin), chapter 26, "Tactical Position Selection", Matthew Jack (Crytek): the position query of
+  the bots (`crates/sim/src/bots/tactics.rs`).
+- *Game AI Pro 2*, chapter 34, "Human Enemy AI in The Last of Us", Travis McIntosh (Naughty Dog): firing spots from cover
+  and the flanker chosen by the combat vector.
+- *Game AI Pro*, chapter 29, "Hierarchical AI for Multiplayer Bots in Killzone 3", Remco Straatman, Tim Verweij, Alex
+  Champandard, Robert Morcus and Hylke Kleve (Guerrilla); *Game AI Pro 2*, chapter 30, "Modular Tactical Influence Maps", Dave
+  Mark; *Game AI Pro 3*, chapter 24, "Being Where It Counts: Telling Paragon Bots Where to Go", Mieszko Zieliński (Epic Games):
+  what a side knows of the enemy (`crates/sim/src/bots/intel.rs`) and the split of the side by priority and need.
+- *Game AI Pro*, chapter 3, "Advanced Randomness Techniques for Game AI", Steve Rabin, section on filtered randomness: draws
+  without streaks (`crates/sim/src/bots/streetwise.rs`).
+- *Game AI Pro 2*, chapter 2, "Combat Dialogue in F.E.A.R.", Jeff Orkin (Monolith): two-line exchanges between bots that say
+  what they do.
+
 ## Compatible content (not included, not redistributed)
 - Battlefield 1942, The Road to Rome and Secret Weapons of WWII (DICE / EA).
 - Desert Combat (Trauma Studios) and the volunteers' Desert Combat Final.
@@ -45,4 +59,6 @@ OpenMW (a free engine that reads the original data) and its `dummy-content` by M
 ## Dependencies
 The Rust crates and their licences, generated: `THIRD_PARTY.md`. All of them are compatible with GPL-3.0
 (`cargo deny check licenses`, `deny.toml`). Worth naming apart because they carry C code or were chosen on purpose:
-`mimalloc` (Microsoft, MIT), the client's allocator.
+`mimalloc` (Microsoft, MIT), the client's allocator; `rerecast` (Jan Hohenheim, MIT or Apache-2.0), the Rust port of
+Mikko Mononen's Recast (recastnavigation, zlib) that builds the bots' walkable-surface navigation mesh
+(`crates/sim/src/navmesh`).

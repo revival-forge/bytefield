@@ -77,7 +77,7 @@ fn main() {
     s.start_conquest();
     s.enable_bots();
     for team in [1u32, 2] {
-        let others = bytefield_sim::bots2::maker(&args[3], 1);
+        let others = bytefield_sim::bots::life::maker(&args[3], 1);
         // (the first of each team probes; its team plays on with the others)
         s.set_minds(team, Box::new(move |k| if k == 0 { Box::new(Probe { at: seconds }) } else { others(k) }));
     }

@@ -55,13 +55,13 @@ pub(super) fn sync(
             };
             assets::to_transform(&m.mul(local))
         };
-        let parachute = v.movement.as_ref().is_some_and(|m| m.parachute);
+        let parachute = v.soldier().is_some_and(|m| m.parachute);
         // from its own eyes the player does not see its body: its arms instead
         let own = !g.third_person && g.session.sim.players[g.player].soldier == Some(i);
         let arms = own && first_person_arms(g, i);
         let seen = |para: bool, fp: bool| if fp != arms || (!fp && own) || (para && !parachute) { Visibility::Hidden } else { Visibility::Inherited };
         if !shown.0.contains_key(&i) {
-            let skeleton = v.movement.as_ref().and_then(|m| m.skeleton.as_ref()).map(|s| s.file.clone());
+            let skeleton = v.soldier().and_then(|m| m.skeleton.as_ref()).map(|s| s.file.clone());
             let mut es = Vec::new();
             // (a soldier in a vehicle casts none: `shadows::update`)
             let casts = level::has_dynamic_shadow(world, &v.template);
@@ -116,7 +116,7 @@ pub(super) fn sync(
                             Some(b) => e.insert((bevy::camera::visibility::NoAutoAabb, bevy::camera::primitives::Aabb { center: b.center, half_extents: b.half_extents + bevy::math::Vec3A::splat(SKIN_REACH) })),
                             None => e.insert(NoFrustumCulling),
                         };
-                        e.insert(SkinFrames { skin: sk.clone(), mesh: h.clone(), prev: Vec::new(), cur: Vec::new(), written: false, arms: d.first_person, rest_normals: !d.parachute });
+                        e.insert(SkinFrames { skin: sk.clone(), mesh: h.clone(), prev: Vec::new(), cur: Vec::new(), written: false, arms: d.first_person, rest_normals: !d.parachute, seated: false });
                         // (the soldier's body from outside too: the same shader and constants)
                         if !d.parachute {
                             e.insert(crate::envmap::ArmsLight);
@@ -126,8 +126,10 @@ pub(super) fn sync(
                         e.insert((FirstPerson { local: Transform::IDENTITY, on: true }, RenderLayers::layer(FIRST_PERSON_LAYER)));
                     }
                     let chute = track.as_ref().filter(|_| skin.is_some() && d.parachute).map(|t| skin::Chute::new(t.0.clone()));
+                    // (its own moment, as a control point's flag: `setUserRandomStartTime`)
+                    let wave = track.as_ref().filter(|t| skin.is_some() && t.1.1.is_empty()).zip(d.state.as_deref()).and_then(|(t, state)| skin::Looping::new(t.0.clone(), world.animations(), state, i as f32 * 0.37));
                     let track = track.as_ref().filter(|_| skin.is_some()).map(|t| t.1.clone());
-                    es.push(Shape { entity: e.id(), part: d.part, local, parachute: d.parachute, skin, first_person: d.first_person, spring: (d.template.clone(), d.instance), track, chute, scroll, spin, cockpit: d.cockpit, compare: d.compare, dummy: d.dummy, wreck: d.wreck, fade, file: matches!(d.kind.as_str(), "standardmesh" | "animatedmesh").then(|| d.file.clone()) });
+                    es.push(Shape { entity: e.id(), part: d.part, local, parachute: d.parachute, skin, first_person: d.first_person, spring: (d.template.clone(), d.instance), track, chute, wave, scroll, spin, cockpit: d.cockpit, compare: d.compare, dummy: d.dummy, wreck: d.wreck, fade, file: matches!(d.kind.as_str(), "standardmesh" | "animatedmesh").then(|| d.file.clone()) });
                 }
             }
             shown.0.insert(i, (v.template.clone(), es));
@@ -135,7 +137,7 @@ pub(super) fn sync(
         let drive = v.drive();
         let es = &mut shown.0.get_mut(&i).expect("just shown").1;
         let posed = if es.iter().any(|s| s.skin.is_some()) {
-            v.movement.as_ref().and_then(|m| match &seated {
+            v.soldier().and_then(|m| match &seated {
                 // (the player's own, on a seat fixed to the vehicle: a gun's seat turns with the gun, unwatched in the original)
                 Some((_, seat)) => m.posed_skeleton_seated(&seat.lower, &seat.upper, seat.half_body, if g.session.sim.players[g.player].soldier == Some(i) && seat.part.is_none() { g.seat_head } else { 0.0 }),
                 None => m.posed_skeleton(),
@@ -155,7 +157,7 @@ pub(super) fn sync(
             }
             _ => None,
         };
-        let posed_1p = if arms { v.movement.as_ref().and_then(|m| m.posed_skeleton_1p(g.tick as f32 * TICK as f32)) } else { None };
+        let posed_1p = if arms { v.soldier().and_then(|m| m.posed_skeleton_1p(g.tick as f32 * TICK as f32)) } else { None };
         let offset = if arms { arms_offset(g, i) } else { Vec3::ZERO };
         // a cockpit is seen from inside by its own crew in first person, the camera near it
         let p = &g.session.sim.players[g.player];
@@ -174,13 +176,14 @@ pub(super) fn sync(
                 sc.rate = [n * sc.speed[0], n * sc.speed[1]];
             }
             // (shut, it is hidden: its vertices wait until it opens)
-            let chute_bones = s.chute.as_mut().and_then(|c| match v.movement.as_ref().filter(|m| m.parachute) {
+            let chute_bones = s.chute.as_mut().and_then(|c| match v.soldier().filter(|m| m.parachute) {
                 Some(m) => Some(c.advance(&m.machine, TICK as f32).to_vec()),
                 None => {
                     c.close();
                     None
                 }
             });
+            let wave_bones = s.wave.as_mut().map(|w| w.advance(TICK as f32).to_vec());
             let s = &*s;
             let Ok((mut vis, mut shown_now, fp, frames_of)) = visuals.get_mut(s.entity) else { continue };
             vis.prev = vis.cur;
@@ -248,6 +251,8 @@ pub(super) fn sync(
                 if let Some(abs) = &chute_bones {
                     sf.push(crate::skin::positions(skin, abs));
                 }
+            } else if let Some(abs) = &wave_bones {
+                sf.push(crate::skin::positions(skin, abs));
             } else if let Some(t) = &s.track {
                 // each bone as far from its rest as its wheel, in the track's frame
                 let rows = match s.part {
@@ -264,6 +269,7 @@ pub(super) fn sync(
                 }
                 sf.push(crate::skin::positions(skin, &abs));
             } else if let Some(sk) = if s.first_person { &posed_1p } else { &posed } {
+                sf.seated = seated.is_some() && !s.first_person;
                 sf.push(crate::skin::positions(skin, &sk.abs));
             }
         }
@@ -316,5 +322,5 @@ pub(super) fn weapon_animation(m: &bytefield_sim::soldier::Movement) -> Option<(
 /// Whether soldier `i` (the player's) shows its first-person arms: alive, on foot.
 pub(super) fn first_person_arms(g: &Game, i: usize) -> bool {
     let v = &g.session.sim.vehicles[i];
-    g.session.sim.players[g.player].alive && v.entry.inside.is_none() && v.movement.is_some()
+    g.session.sim.players[g.player].alive && v.entry.inside.is_none() && v.soldier().is_some()
 }

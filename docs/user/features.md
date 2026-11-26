@@ -96,9 +96,15 @@ Two separate things:
   **OPTIONS → GENERAL** has one line per pack to turn it on or off, from the next round. Where a pack's level files
   differ from your install's, the pack's win, even over the 1.6 patch.
 - **How it is drawn: the profile.** *Original* reproduces the original look; *Enhanced* adds better filtering,
-  antialiasing, shadows and reflections. **OPTIONS → VIDEO** has the profile and each setting (it becomes *Custom*
+  antialiasing, shadows, reflections, the shadows of clouds drifting over the ground (with the sun's shadows on), the air
+  shimmering over running engines and blasts, grass on the green ground
+  near you (half density), the terrain's relief (its fine detail lit by the sun) and aerial perspective (a light haze
+  over what is farther, brighter towards the sun; it never lets you see farther than the original's fog), both at half strength. **OPTIONS → VIDEO** has the profile and each setting (it becomes *Custom*
   when you change one); **EFFECTS** has glow, colour, vignette, view distance, field of view and vsync;
-  **EXPERIMENTAL** has what is still being tried. Settings marked `*` apply from the next round.
+  **EXPERIMENTAL** has what is still being tried: soft particles (smoke and fire fading out where they meet the ground) and the light of muzzle flashes and explosions
+  on their surroundings, the marks bullets and blasts leave on the ground and the walls, and the same effects as Enhanced at their full strength. Settings marked `*` apply from the next round.
+  The grass is only drawn on your screen: it hides no one from the bots and the other players, so a soldier lying down
+  can look half covered by it to you while the others see him clearly.
 
 Plain *vanilla* is no packs and the *Original* profile.
 

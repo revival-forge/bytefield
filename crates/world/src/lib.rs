@@ -4,6 +4,7 @@
 //! 0..worldSize in x and z. How the heightmap's rows/columns and the colour tiles map onto x/z
 //! is not assumed: [`Orientation`] values are checked against the data (see the `topdown` tool).
 
+pub mod grass;
 pub mod scene;
 pub mod shadow;
 pub mod tree;

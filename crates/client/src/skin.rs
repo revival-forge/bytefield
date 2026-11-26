@@ -51,6 +51,8 @@ fn fit(mesh: &sm::StandardMesh, skin: &Skin, skeleton: &SkeletonFile, partial: b
     let frames = if tolerance > NEAR { bind_frames(skin) } else { Vec::new() };
     let key = |p: &[f32; 3]| p.map(f32::to_bits);
     let by_pos: HashMap<[u32; 3], usize> = skin.vertices.iter().enumerate().map(|(i, (p, _))| (key(p), i)).collect();
+    // TODO: the original changes a skinned mesh's LOD with the distance: the Type 38's seated soldier, some 15 m off in the chase view,
+    // was `BritBody`'s lod 2 (draws of 138, 108 and 38 vertices, its three materials). Which distances, unread.
     let lod = mesh.lods.first()?;
     lod.materials
         .iter()
@@ -305,7 +307,7 @@ pub fn write(skin: &MaterialSkin, pos: Vec<[f32; 3]>, mesh: &mut Mesh) {
 /// with his yaw). So the normal follows the yaw but not the pitch of `turn` (the entity's rotation).
 /// `body`: the yaw that lights them, if not `turn`'s. The first-person arms hang from the camera, but `c6` follows the body, which
 /// stays behind the view until the head's turn reaches `setTurnLeftRightAngle` (42° one way, 60° the other).
-pub fn write_arms(skin: &MaterialSkin, pos: Vec<[f32; 3]>, turn: Quat, body: Option<Quat>, mesh: &mut Mesh) {
+pub fn write_arms(skin: &MaterialSkin, pos: Vec<[f32; 3]>, turn: Quat, body: Option<Quat>, seated: bool, mesh: &mut Mesh) {
     let yaw = Quat::from_rotation_y(body.unwrap_or(turn).to_euler(EulerRot::YXZ).0);
     let mut back = turn.inverse() * yaw;
     // The arms: `dp3 v3, -c6` with the file's normal and `c6` the sun in the body's frame, which our light in the yawed frame
@@ -316,7 +318,16 @@ pub fn write_arms(skin: &MaterialSkin, pos: Vec<[f32; 3]>, turn: Quat, body: Opt
     // −0.463, −0.463) in F9, F10 and F11 alike, so there is no half turn of its own.
     // Before, (−x, y, z) chosen by eye.
     back *= Quat::from_rotation_y(std::f32::consts::PI);
-    let nor: Vec<[f32; 3]> = skin.normals.iter().map(|n| (back * Vec3::from(*n)).to_array()).collect();
+    // A soldier in a seat: the normal the other way. Worked out from the shader, `dp3 v3, −c6` with `c6` the sun in the soldier's
+    // frame and the static mesh's (x, y, −z) as the file-to-Bevy turn, the normal to light with is R·(−x, −y, z) of the file's, the
+    // negative of the one above. Measured on the Type 38 seen from behind (the khaki above and below the belt: 121 and 132 of red
+    // against the original's 128 and 137; before, 111 and 110) and on the Willys (the driver's back, khaki as in the original,
+    // olive before).
+    // On foot the same derivation does not hold: against the original from outside (an M16 soldier in El_Alamein, front and back)
+    // the negated normal darkens the front further, and of six sign patterns the one below comes closest. The front stays darker
+    // than the original's even so, which is the amount of light, not the normal's sign.
+    let sign = if seated { -1.0 } else { 1.0 };
+    let nor: Vec<[f32; 3]> = skin.normals.iter().map(|n| (back * (Vec3::from(*n) * sign)).to_array()).collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
 }

@@ -75,7 +75,7 @@ pub(super) fn armor_fx(g: Res<Game>, mut fx: ResMut<crate::effects::Effects>, mu
     }
     let db = &g.session.sim.world.db;
     for (i, v) in g.session.sim.vehicles.iter().enumerate() {
-        let Some(a) = v.armor.as_ref().filter(|_| !v.removed && !v.is_soldier()) else {
+        let Some(a) = v.armor.as_ref().filter(|_| !v.removed && !v.has_soldier_contact()) else {
             if let Some((_, ids)) = burning.0.remove(&i) {
                 ids.into_iter().for_each(|id| fx.stop(id));
             }
@@ -106,6 +106,8 @@ pub(super) fn triggers(
     g: Res<Game>,
     mut fx: ResMut<crate::effects::Effects>,
     mut flashes: ResMut<crate::lights::Flashes>,
+    mut decals: ResMut<crate::decals::Decals>,
+    mut blasts: ResMut<crate::heat::Blasts>,
     weapons: Res<Weapons>,
     mut seen: Local<(usize, usize, usize)>,
     mut muzzles: Local<HashMap<String, Vec<(String, Mat4)>>>,
@@ -132,7 +134,7 @@ pub(super) fn triggers(
     // (cursors count from the round's start: the sim cuts its logs, `trim_logs`)
     for (_, s, shot, proj) in bytefield_sim::log_since(&sim.journal.fired, sim.journal.log_base.fired, &mut seen.0) {
         let v = &sim.vehicles[*s];
-        let Some(m) = v.movement.as_ref() else {
+        let Some(m) = v.soldier() else {
             // a vehicle's gun: the weapon whose projectile (or tracer) it was, its effects on the
             // shot's barrel
             let name = proj.and_then(|k| sim.projectiles.get(k)).map(|q| q.template.name.clone());
@@ -176,9 +178,15 @@ pub(super) fn triggers(
     // a projectile's hit: the effect of its material against the surface's, its up along the
     // surface's normal
     let mut shown: Vec<[f32; 3]> = Vec::new();
+    // (the marks: where a projectile stopped on the terrain or a static, not on a vehicle, a soldier or water; a blast's
+    // takes the hit's place below)
+    let mut marks: Vec<(Vec3, Vec3)> = Vec::new();
     for (m, hit) in bytefield_sim::log_since(&sim.journal.impacts, sim.journal.log_base.impacts, &mut seen.2) {
-        let Some(name) = materials.effects.get(&(*m as i64, hit.material as i64)) else { continue };
         let n = assets::to_bevy(hit.normal).normalize_or(Vec3::Y);
+        if hit.ended && hit.vehicle.is_none() && hit.bone.is_none() && !hit.water {
+            marks.push((assets::to_bevy(hit.point), n));
+        }
+        let Some(name) = materials.effects.get(&(*m as i64, hit.material as i64)) else { continue };
         let t = Transform::from_translation(assets::to_bevy(hit.point)).with_rotation(Quat::from_rotation_arc(Vec3::Y, n));
         if fx.start(db, name, t, Vec3::ZERO, false, 0) {
             shown.push(hit.point);
@@ -188,6 +196,8 @@ pub(super) fn triggers(
     // ground's, else a grenade's
     for (_, e) in bytefield_sim::log_since(&sim.journal.explosions, sim.journal.log_base.explosions, &mut seen.1) {
         flashes.push(crate::lights::Flash::explosion(assets::to_bevy(e.center), e.radius));
+        blasts.push(assets::to_bevy(e.center), e.radius);
+        scorch(&mut decals, &mut marks, sim.world, e);
         if shown.iter().any(|p| (0..3).map(|k| (p[k] - e.center[k]).powi(2)).sum::<f32>() < 4.0) {
             continue;
         }
@@ -198,6 +208,30 @@ pub(super) fn triggers(
             fx.start(db, "e_ExplGranade", t, Vec3::ZERO, false, 0);
         }
     }
+    for (at, normal) in marks {
+        decals.push(crate::decals::Mark { kind: crate::decals::Kind::Hole, at, normal, size: crate::decals::HOLE_SIZE });
+    }
+}
+
+/// An explosion's scorch: on the surface its projectile hit (within 3 m of its centre), else on the terrain under it if it
+/// went off near the ground; none in the air.
+fn scorch(decals: &mut crate::decals::Decals, marks: &mut Vec<(Vec3, Vec3)>, world: &bytefield_sim::World, e: &bytefield_sim::damage::Explosion) {
+    let c = assets::to_bevy(e.center);
+    let size = crate::decals::scorch_size(e.radius);
+    let near = marks.iter().enumerate().map(|(k, m)| (k, m.0.distance_squared(c))).filter(|m| m.1 < 9.0).min_by(|a, b| a.1.total_cmp(&b.1));
+    let (at, normal) = if let Some((k, _)) = near {
+        marks.swap_remove(k)
+    } else {
+        let (x, z) = (e.center[0] as f64, e.center[2] as f64);
+        let Some(h) = world.height_at(x, z) else { return };
+        if h < world.level.terrain.water_level as f64 || e.center[1] as f64 - h > (e.radius as f64 * 0.5).max(1.5) {
+            return;
+        }
+        let dh = |dx: f64, dz: f64| world.height_at(x + dx, z + dz).unwrap_or(h);
+        let n = Vec3::new((dh(-0.5, 0.0) - dh(0.5, 0.0)) as f32, 1.0, -(dh(0.0, -0.5) - dh(0.0, 0.5)) as f32).normalize();
+        (assets::to_bevy([e.center[0], h as f32, e.center[2]]), n)
+    };
+    decals.push(crate::decals::Mark { kind: crate::decals::Kind::Scorch, at, normal, size });
 }
 
 /// A matrix of the skeleton's (row vectors, `f32`) as the scene's.
@@ -222,7 +256,7 @@ pub(super) fn hands(
 ) {
     let world = g.session.sim.world;
     for (i, v) in g.session.sim.vehicles.iter().enumerate() {
-        let held = v.movement.as_ref().filter(|m| !v.removed && v.in_world() && v.entry.inside.is_none() && (m.lower.flags(&m.machine) | m.upper.flags(&m.machine)) & bytefield_sim::anim::HIDE_WEAPON == 0).and_then(|m| Some((m, m.weapon.as_ref()?.template.name.clone())));
+        let held = v.soldier().filter(|m| !v.removed && v.in_world() && v.entry.inside.is_none() && (m.lower.flags(&m.machine) | m.upper.flags(&m.machine)) & bytefield_sim::anim::HIDE_WEAPON == 0).and_then(|m| Some((m, m.weapon.as_ref()?.template.name.clone())));
         let name = held.as_ref().map(|h| h.1.clone());
         if let Some((had, es)) = in_hand.0.get(&i)
             && Some(had) != name.as_ref()

@@ -19,7 +19,7 @@ fn the_gc_astromech_repairs() {
     let max = s.vehicles[xw].armor.as_ref().unwrap().max_hp;
     s.give_damage(xw, max * 0.5, bytefield_sim::damage::Source::Kill);
     let hp = s.vehicles[xw].armor.as_ref().unwrap().hp;
-    s.vehicles[soldier].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0)]);
+    s.vehicles[soldier].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, 1.0)]);
     for _ in 0..150 {
         s.step();
     }

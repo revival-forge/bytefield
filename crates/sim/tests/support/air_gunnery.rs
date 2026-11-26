@@ -30,7 +30,7 @@ pub fn tail_shots(w: &bytefield_sim::World, shooter: &str, target: &str, gap: f3
         s.vehicles[soldier].team = team;
         s.enter(soldier, craft, 0);
         let keys: &[(usize, f32)] = if craft == a { &[(axis::THROTTLE, 1.0), (axis::FIRE, 1.0)] } else { &[(axis::THROTTLE, 1.0)] };
-        s.vehicles[soldier].movement.as_mut().unwrap().set_input(keys);
+        s.vehicles[soldier].soldier_mut().unwrap().set_input(keys);
     }
     let rails = [(t, [x, y]), (a, [x + offset[0], y + offset[1]])];
     let mut out = TailShots::default();

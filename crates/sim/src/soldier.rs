@@ -575,8 +575,8 @@ impl Movement {
     /// The skeleton of a soldier shown on a vehicle's seat: the seat's two states, looking ahead; a
     /// state the machine does not have changes nothing (`setAnimationState`), he keeps the one he had. `half_body`
     /// (`c_SeatShowHalfBodySoldier`): `disableBoneTree` of `Bip01 Pelvis`, whose children [`crate::skeleton::Skeleton::transform`] leaves on it,
-    /// so the legs, not the spine. A client's picture: a soldier in a vehicle is not updated here, and no shot or collision
-    /// reads this.
+    /// so the legs, not the spine. A client's picture, and, once as he gets in, the collision skeleton of a soldier on a seat
+    /// that shows him ([`crate::entry::SeatShow`]): a soldier in a vehicle is not updated here.
     pub fn posed_skeleton_seated(&self, lower: &str, upper: &str, half_body: bool, head_yaw: f32) -> Option<crate::skeleton::Skeleton> {
         let mut sk = self.skeleton.clone()?;
         sk.reset();
@@ -1471,7 +1471,7 @@ impl Vehicle {
     /// one (`selectBestLoadedWeapon`: the kit's items in order, the first with ammunition), the
     /// others stowed. False without weapons or movement.
     pub fn give_kit(&mut self, weapons: Vec<crate::projectile::Weapon>, active: Option<&str>) -> bool {
-        let Some(m) = self.movement.as_mut() else { return false };
+        let Some(m) = self.soldier_mut() else { return false };
         if weapons.is_empty() {
             return false;
         }
@@ -1488,17 +1488,12 @@ impl Vehicle {
 
     /// `setIsParachuting` (a paratrooper's spawn point opens it at once).
     pub fn parachute(&mut self, open: bool) {
-        if let Some(m) = self.movement.as_mut() {
+        if let Some(m) = self.soldier_mut() {
             m.set_parachuting(open);
             if let Some(d) = m.set_drag.take() {
                 self.craft.body.drag = d;
             }
         }
-    }
-
-    /// A soldier is a mover whose root part is a soldier's.
-    pub fn is_soldier(&self) -> bool {
-        self.contacts.iter().any(|c| c.soldier)
     }
 
     /// What the soldier's player asks for from now on: forward and strafe, the pose's keys
@@ -1511,7 +1506,7 @@ impl Vehicle {
             (axis::CROUCH, if pose == 1 { 1.0 } else { 0.0 }),
             (axis::LIE, if pose == 2 { 1.0 } else { 0.0 }),
         ];
-        if let Some(m) = self.movement.as_mut() {
+        if let Some(m) = self.soldier_mut() {
             m.set_input(&axes);
         }
     }
@@ -1519,7 +1514,7 @@ impl Vehicle {
     /// The velocity the soldier's input asks for (world, m/s); kept until changed (and no
     /// player input runs).
     pub fn set_walk(&mut self, v: V3) {
-        if let Some(m) = self.movement.as_mut() {
+        if let Some(m) = self.soldier_mut() {
             m.driven = false;
         }
         for c in self.contacts.iter_mut().filter(|c| c.soldier) {
@@ -1638,7 +1633,8 @@ impl World {
         }
         movement.drag = body.drag;
         let movement = Some(movement);
-        Some(Vehicle { template: template.to_string(), craft: crate::craft::Craft::new(&model, body), contacts: vec![contactor(template)], radius: radius(), movement, id: 0, armor: self.db.object_template(template).and_then(crate::damage::ArmorTemplate::from_template).map(crate::damage::Armor::new), removed: false, gone_since: None, born: 0, place_gen: 0, team: 0, entry: Default::default(), weapons: Vec::new(), shots: Vec::new(), solved: false, fixed: false, physics_off: false })
+        let body = crate::mover::Body { template: template.to_string(), craft: crate::craft::Craft::new(&model, body), contacts: vec![contactor(template)], radius: radius(), id: 0, solved: false, fixed: false, physics_off: false };
+        Some(Vehicle { body, movement, armor: self.db.object_template(template).and_then(crate::damage::ArmorTemplate::from_template).map(crate::damage::Armor::new), removed: false, gone_since: None, born: 0, place_gen: 0, team: 0, entry: Default::default(), weapons: Vec::new(), shots: Vec::new() })
     }
 }
 

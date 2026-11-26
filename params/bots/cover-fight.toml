@@ -1,0 +1,3 @@
+# A rival in the basket: the anchor with each bot moving to a firing spot before stopping to fight.
+mind = "bots:cover-fight+no-prone-fight+no-fps"
+about = "anchor 0 with cover-fight"

@@ -13,9 +13,9 @@ fn mortar(w: &bytefield_sim::World) {
     let sol = s.spawn_vehicle(&skin, [x, y, z], [0.0; 3]).unwrap();
     s.vehicles[sol].team = 2;
     assert!(s.vehicles[sol].give_kit(w.kit_weapons(&kit), Some("Mortar_weap")));
-    s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
+    s.vehicles[sol].soldier_mut().unwrap().has_player = true;
     for f in 0..90 {
-        s.vehicles[sol].movement.as_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, if f < 2 { 1.0 } else { 0.0 })]);
+        s.vehicles[sol].soldier_mut().unwrap().set_input(&[(bytefield_sim::soldier::axis::FIRE, if f < 2 { 1.0 } else { 0.0 })]);
         s.step();
     }
     let mortars: Vec<usize> = (0..s.vehicles.len()).filter(|&i| s.vehicles[i].template.eq_ignore_ascii_case("Mortar") && !s.vehicles[i].removed).collect();
@@ -51,13 +51,13 @@ fn the_dc_mortar_is_deployed_as_the_original() {
         let kit = w.kit_weapons("US_Support");
         // (with the kit's first, then key 4 as a player: raising it, `enable`, sets `fireDelay`'s countdown)
         assert!(s.vehicles[sol].give_kit(kit, None));
-        s.vehicles[sol].movement.as_mut().unwrap().has_player = true;
+        s.vehicles[sol].soldier_mut().unwrap().has_player = true;
         use bytefield_sim::soldier::axis;
         let (switch, pressed) = (0u64, 40u64);
         let (mut fired, mut made) = (None, None);
         for f in 0..80u64 {
             let on = |a: u64| if (a..a + 2).contains(&f) { 1.0 } else { 0.0 };
-            s.vehicles[sol].movement.as_mut().unwrap().set_input(&[(axis::WEAPON1 + 3, on(switch)), (axis::FIRE, on(pressed))]);
+            s.vehicles[sol].soldier_mut().unwrap().set_input(&[(axis::WEAPON1 + 3, on(switch)), (axis::FIRE, on(pressed))]);
             s.step();
             if fired.is_none() && !s.journal.fired.is_empty() {
                 fired = Some(f);

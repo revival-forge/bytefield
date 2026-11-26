@@ -2,7 +2,7 @@
 //!   deaths <game> <mod> <level> --a <mind> --b <mind> [--seed N] [--minutes M] [--players J] [--team 1|2] [--side-a 1|2]
 //! Each line: time, player, seconds alive, where it spawned and where it died (x y z), the fall from the highest point of
 //! its life, the vehicle it was in, and the damage events of its last 3 s (source, amount, who gave it). A summary by
-//! cause at the end, and `deaths N falls M` (falls: deaths on foot after dropping more than 20 m from the highest point of a life spent wholly on foot). The minds are the ones of `torneo3` (bots2, bots3, bots3:<variant>, none).
+//! cause at the end, and `deaths N falls M` (falls: deaths on foot after dropping more than 20 m from the highest point of a life spent wholly on foot). The minds are the ones of `torneo3` (bots, bots:<variant>, none).
 use bytefield_sim::bot_api::MindMaker;
 use bytefield_sim::damage::Source;
 use bytefield_sim::players::PlayerEvent;
@@ -10,9 +10,8 @@ use std::collections::BTreeMap;
 
 fn mind_of(name: &str, level: &str, seed: u64) -> Option<MindMaker> {
     match name {
-        "bots2" => Some(bytefield_sim::bots2::maker(level, seed)),
-        "bots3" => Some(bytefield_sim::bots3::maker(level, seed)),
-        v if v.starts_with("bots3:") => Some(bytefield_sim::bots3::maker_variant(level, seed, &v["bots3:".len()..].split('+').collect::<Vec<_>>())),
+        // variants to measure what each piece brings: bots:no-squad, bots:no-assign+no-spawn...
+        n if bytefield_sim::bots::is_name(n) => Some(bytefield_sim::bots::mind(n, level, seed)),
         "none" => None,
         other => panic!("no mind called {other}"),
     }
@@ -34,7 +33,7 @@ fn main() {
     }
     let opt = |k: &str, d: &str| args.iter().position(|a| a == k).and_then(|i| args.get(i + 1)).cloned().unwrap_or(d.to_string());
     let (game, modname, level) = (&args[1], &args[2], &args[3]);
-    let (a, b) = (opt("--a", "bots3"), opt("--b", "bots2"));
+    let (a, b) = (opt("--a", "bots"), opt("--b", "bots"));
     let seed: u64 = opt("--seed", "1").parse().unwrap();
     let minutes: f64 = opt("--minutes", "2").parse().unwrap();
     let players: usize = opt("--players", "32").parse().unwrap();

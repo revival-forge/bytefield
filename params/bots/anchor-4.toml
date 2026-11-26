@@ -1,0 +1,6 @@
+# The fixed rival from 1.22.0 (25-nov-2026): anchor 3 with `armour` (no rounds at armour its weapons do not hurt, grenades from
+# close, the exposed gunner a target), `close-fight` (no flight to get unstuck with a target within 8 m) and `grenade-throw` (the
+# grenade leaves the hand). Never edited: a new anchor is a new file; if a later default changes how `bots` plays, its mind gets
+# the `no-` of it, as anchors 2 and 3 (at 1.23.0, `no-heard-walk`; at 1.24.0, `no-fov+no-recall`; same rounds as before).
+mind = "bots:no-heard-walk+no-fov+no-recall"
+about = "anchor 4: bots 1.22.0 (armour, close-fight and grenade-throw by default), defaults, variants off"

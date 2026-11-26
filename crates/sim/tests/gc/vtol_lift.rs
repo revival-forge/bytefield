@@ -1,4 +1,4 @@
-//! Which throttle lifts GC's aircraft straight up off the ground ([`VehicleClass::lift_throttle`]): what bots3's VTOL takeoff
+//! Which throttle lifts GC's aircraft straight up off the ground ([`VehicleClass::lift_throttle`]): what bots's VTOL takeoff
 //! reads. Skipped without the real data.
 use bytefield_sim::bot_api::VehicleClass;
 
@@ -38,16 +38,16 @@ fn the_cloud_car_and_the_gunships_fly_hanging_the_fighters_on_their_wings() {
     }
 }
 
-/// A bots3 pilot in one of GC_Bespin's cloud cars, parked on a platform of the city over a void: it rises, flies hanging and keeps
+/// A bots pilot in one of GC_Bespin's cloud cars, parked on a platform of the city over a void: it rises, flies hanging and keeps
 /// to the city's height (before, it put the throttle forward as a plane, and fell into the clouds).
 #[test]
-fn a_bots3_pilot_flies_a_cloud_car_off_its_platform_and_keeps_to_the_citys_height() {
+fn a_bots_pilot_flies_a_cloud_car_off_its_platform_and_keeps_to_the_citys_height() {
     let game = bytefield_testdata::require!(Gc);
     let w = bytefield_sim::World::load(&game, "GCMOD", "GC_Bespin", "conquest").unwrap();
     let mut s = bytefield_sim::Sim::new(&w, 1.0 / 30.0);
     s.round.playing = true;
     s.start_conquest();
-    s.set_minds(1, bytefield_sim::bots3::maker(&w.level.name, 1));
+    s.set_minds(1, bytefield_sim::bots::maker(&w.level.name, 1));
     let k = s.join(1, true);
     let mut soldier = None;
     for _ in 0..900 {

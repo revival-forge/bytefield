@@ -8,13 +8,15 @@ import bevy_pbr::render::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{Vertex, VertexOutput, FragmentOutput, decompress_vertex},
     pbr_functions::{alpha_discard, main_pass_post_lighting_processing},
-    mesh_view_bindings::{view, lights},
+    mesh_view_bindings::{view, lights, globals},
     mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
     pbr_types::{STANDARD_MATERIAL_FLAGS_ALPHA_MODE_RESERVED_BITS, STANDARD_MATERIAL_FLAGS_ALPHA_MODE_OPAQUE},
     shadows::fetch_directional_shadow,
 };
 import bevy_pbr::render::{clustered_forward as clustering, mesh_view_bindings::clustered_lights, pbr_lighting::getDistanceAttenuation};
 import bevy_render::maths::PI;
+import bytefield::shaders::clouds::cloud_at;
+import bevy_pbr::render::view_transformations::position_world_to_clip;
 @if(VIEW_TRANSMISSION_TEXTURE)
 import bevy_pbr::render::mesh_view_bindings::{view_transmission_texture, view_transmission_sampler};
 
@@ -66,6 +68,13 @@ fn vertex(vertex_in: Vertex) -> VertexOutput {
     out.color = vec4(select(min(light.ambient.rgb + diffuse, vec3(1.0)), light.sprite.rgb, any(v.uv_b != vec2(0.0))), fade(world));
     out.world_position = view.world_from_view * at;
     out.position = view.clip_from_view * at;
+    // (what is not a sprite, the trunks, also goes in the depth prepass with the soft particles: there Bevy takes
+    // world → clip in one step, and here the same, or the rounding apart left pixels of the trunk failing the depth
+    // test with the fog's colour behind them: El Alamein's palms)
+    if all(v.uv_b == vec2(0.0)) {
+        out.world_position = mesh_functions::mesh_position_local_to_world(world, vec4(v.position, 1.0));
+        out.position = position_world_to_clip(out.world_position.xyz);
+    }
     @if(VERTEX_OUTPUT_INSTANCE_INDEX)
     out.instance_index = vertex_in.instance_index;
     return out;
@@ -130,7 +139,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     // (a sprite takes no shadows: its position is not on the tree's surface and it came out black)
     if (lights.n_directional_lights > 0u && !sprite) {
-        let s = sun_shadow(in.world_position, normalize(in.world_normal), in.position.xy);
+        let s = sun_shadow(in.world_position, normalize(in.world_normal), in.position.xy) * (1.0 - light.sun.w * cloud_at(in.world_position.xyz));
         color = vec4(color.rgb * pow(mix(light.shade.xyz, vec3(1.0), s), vec3(2.2)), color.a);
     }
     let e = flash_light(in.world_position, normalize(in.world_normal), in.position.xy);

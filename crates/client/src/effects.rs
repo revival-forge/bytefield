@@ -45,8 +45,9 @@ impl bevy::pbr::MaterialExtension for Soft {
 /// how deep a sprite fades into what is behind it, over its size
 const SOFT: f32 = 0.5;
 
-fn soft(on: bool) -> Soft {
-    Soft { soft: Vec4::new(if on { SOFT } else { 0.0 }, 0.0, 0.0, 0.0) }
+/// y: 1 for an additive sprite (`destBlendMode BMOne`)
+fn soft(on: bool, additive: bool) -> Soft {
+    Soft { soft: Vec4::new(if on { SOFT } else { 0.0 }, if additive { 1.0 } else { 0.0 }, 0.0, 0.0) }
 }
 
 /// A sprite's half side over its `size`: measured against the original's veil of smoke in Husky, the
@@ -625,9 +626,9 @@ pub fn update(
     let on = crate::assets::graphics().soft_particles;
     if fx.soft != on {
         fx.soft = on;
-        for (.., m) in fx.sprites.values() {
+        for ((_, additive, _), (.., m)) in fx.sprites.iter() {
             if let Some(mut m) = particle_materials.get_mut(m) {
-                m.extension = soft(on);
+                m.extension = soft(on, *additive);
             }
         }
     }
@@ -691,14 +692,16 @@ pub fn update(
                 let texture = cache.texture(vfs, &key.0, &mut images);
                 let base = StandardMaterial {
                     base_color_texture: texture,
-                    // additive in the original (`BMOne`): blended by alpha here, as the meshes
-                    alpha_mode: AlphaMode::Blend,
+                    // additive in the original (`BMOne`): premultiplied, with `particle.wesl` giving colour × alpha and
+                    // alpha 0, so it adds to what is behind (Bevy's [`AlphaMode::Add`] drew nothing on the first person's
+                    // camera). Blended by alpha, DC's magenta HEDP flash came out a solid pink veil instead of a pale glow
+                    alpha_mode: if key.1 { AlphaMode::Premultiplied } else { AlphaMode::Blend },
                     unlit: true,
                     double_sided: true,
                     cull_mode: None,
                     ..default()
                 };
-                let mat = particle_materials.add(ParticleMaterial { base, extension: soft(fx.soft) });
+                let mat = particle_materials.add(ParticleMaterial { base, extension: soft(fx.soft, key.1) });
                 let h = meshes.add(mesh);
                 let e = commands.spawn((Mesh3d(h.clone()), MeshMaterial3d(mat.clone()), Transform::IDENTITY, NoFrustumCulling, RenderLayers::layer(key.2))).id();
                 fx.sprites.insert(key, (e, h, true, mat));

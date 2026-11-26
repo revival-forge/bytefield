@@ -131,6 +131,15 @@ fn params(t: &Template) -> BTreeMap<String, Value> {
         if COSMETIC.contains(&p.name.as_str()) {
             continue;
         }
+        // a seat's flags add up (the T-34-85's gunner: `c_SeatShowHalfBodySoldier`, then `c_SeatIsOutside`)
+        if p.name == "seatflags" {
+            if let Some(Value::List(all)) = out.get_mut("seatflags") {
+                all.extend(p.args.iter().cloned());
+            } else {
+                out.insert(p.name.clone(), Value::List(p.args.clone()));
+            }
+            continue;
+        }
         out.insert(p.name.clone(), Value::parse(&p.args));
     }
     out

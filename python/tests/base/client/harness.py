@@ -1,6 +1,7 @@
 """The release client on its own Xvfb display, driven with xdotool: what the client tests share."""
 
 import fcntl
+import select
 import os
 import shutil
 import subprocess
@@ -52,6 +53,11 @@ def take_slot(timeout=900):
     raise AssertionError(f"no free client slot of {n} in {timeout} s")
 
 
+# The clients not yet closed: a test that fails between `Client(...)` and its `with` (a helper that waits for the
+# window first) would leave the client and its Xvfb running, holding a slot; `conftest.py` closes them after each test.
+LIVE = set()
+
+
 class Client:
     """The client on its own display. Coordinates are the menu's 800x600, as the original's."""
 
@@ -62,33 +68,64 @@ class Client:
         if config is not None:
             self.config.write_text(config)
         self.slot = take_slot()
-        r, w = os.pipe()
-        self.xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(w), "-screen", "0", "1280x720x24"], pass_fds=[w], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        os.close(w)
-        self.display = ":" + os.read(r, 16).decode().strip()
-        os.close(r)
+        self.xvfb_log = open(self.tmp / "xvfb.log", "w")
+        self.start_xvfb()
         self.env = {**os.environ, "DISPLAY": self.display, "BYTEFIELD_CONFIG": str(self.tmp / "settings.cfg"), "BYTEFIELD_STATE": str(self.state), "LD_LIBRARY_PATH": str(ROOT / "data/runtime-libs/root/usr/lib/x86_64-linux-gnu"), **(env or {})}
         # (no pointer acceleration: a pixel is a pixel)
-        subprocess.run(["xset", "m", "1", "1"], env=self.env, check=False)
+        subprocess.run(["xset", "m", "1", "1"], env=self.env, check=False, timeout=30)
         self.log = open(self.tmp / "client.log", "w")
         self.client = subprocess.Popen([str(BIN), str(install_view()), *args], cwd=ROOT, env=self.env, stdout=self.log, stderr=subprocess.STDOUT)
+        LIVE.add(self)
+
+    def start_xvfb(self):
+        """Xvfb on the first free display, read from `-displayfd` up to its end: a socket left behind by an Xvfb that was
+        killed (`/tmp/.X11-unix/X<n>` without its lock) makes it write that number, fail to listen there and write the next
+        one, and closing the pipe after the first read made that second write its death («Cannot write display number»).
+        It closes the pipe once it listens. If it still quits, once more."""
+        for _ in range(3):
+            r, w = os.pipe()
+            self.xvfb = subprocess.Popen(["Xvfb", "-displayfd", str(w), "-screen", "0", "1280x720x24"], pass_fds=[w], stdout=subprocess.DEVNULL, stderr=self.xvfb_log)
+            os.close(w)
+            said, end = b"", time.time() + 60
+            while time.time() < end and select.select([r], [], [], max(0.0, end - time.time()))[0]:
+                chunk = os.read(r, 64)
+                if not chunk:
+                    break
+                said += chunk
+            os.close(r)
+            numbers = said.split()
+            if numbers and self.xvfb.poll() is None:
+                self.display = ":" + numbers[-1].decode()
+                return
+            self.xvfb.kill()
+            self.xvfb.wait()
+        raise AssertionError(f"Xvfb did not stay up: {(self.tmp / 'xvfb.log').read_text()[-1500:]}")
 
     def focus(self):
         """Without a window manager nobody gives the window the keyboard."""
         end = time.time() + 60
         while time.time() < end:
-            found = subprocess.run(["xdotool", "search", "--name", "."], env=self.env, capture_output=True, text=True).stdout.split()
+            found = subprocess.run(["xdotool", "search", "--name", "."], env=self.env, capture_output=True, text=True, timeout=30).stdout.split()
             if found:
                 self.xdo("windowfocus", found[-1])
                 return
             time.sleep(0.5)
-        raise AssertionError("no window")
+        raise AssertionError(f"no window; Xvfb {'exited ' + str(self.xvfb.poll()) if self.xvfb.poll() is not None else 'running'}: {(self.tmp / 'xvfb.log').read_text()[-1500:]}")
 
     def close(self):
+        if self not in LIVE:
+            return
+        LIVE.discard(self)
         self.client.kill()
         self.client.wait()
-        self.xvfb.kill()
-        self.xvfb.wait()
+        # (terminated, not killed: it takes its lock and socket away; see `start_xvfb`)
+        self.xvfb.terminate()
+        try:
+            self.xvfb.wait(10)
+        except subprocess.TimeoutExpired:
+            self.xvfb.kill()
+            self.xvfb.wait()
+        self.xvfb_log.close()
         self.log.close()
         self.slot.close()
 
@@ -99,7 +136,7 @@ class Client:
         self.close()
 
     def xdo(self, *args):
-        subprocess.run(["xdotool", *map(str, args)], env=self.env, check=True)
+        subprocess.run(["xdotool", *map(str, args)], env=self.env, check=True, timeout=60)
 
     def click(self, x, y):
         self.xdo("mousemove", round(160 + x * 1.2), round(y * 1.2))

@@ -27,7 +27,7 @@ fn main() {
     s.enable_bots();
     s.rng = bytefield_sim::players::Rng(s.rng.0 ^ seed.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     for t in [1, 2] {
-        s.set_minds(t, bytefield_sim::bots2::maker("Berlin", seed));
+        s.set_minds(t, bytefield_sim::bots::life::maker("Berlin", seed));
     }
     for i in 0..32 {
         let p = s.join(0, true);
@@ -88,7 +88,7 @@ fn main() {
             first.get_or_insert(t);
             first_per_bot[k].get_or_insert(t);
             shot_this_second[k] = true;
-            if s.vehicles[f.1].is_soldier() {
+            if s.vehicles[f.1].has_soldier_contact() {
                 on_foot += 1;
             }
             let d = enemy_dist(k, pos);
